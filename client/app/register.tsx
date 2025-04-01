@@ -2,8 +2,8 @@ import React, { useState } from 'react';
 import { View, Text, TextInput, StyleSheet, Alert, Pressable } from 'react-native';
 import { router, Href } from 'expo-router'; // Import Href
 
-// Define your backend URL (use the same constant as login)
-const API_URL = 'http://192.168.1.13:7000'; // Use your computer's local IP and CORRECT PORT
+// Define your backend URL
+const API_URL = 'https://flashgo.onrender.com'; // Use hosted backend URL
 
 type Role = 'parent' | 'child';
 

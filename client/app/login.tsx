@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
 import { View, Text, TextInput, Button, StyleSheet, Alert, Pressable } from 'react-native';
-import { router, Href } from 'expo-router'; // Import Href
+import { router, Href } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { jwtDecode } from 'jwt-decode'; // Ensure types are installed
+import { jwtDecode } from 'jwt-decode';
+import { registerBackgroundSocketTask } from '../tasks/socketTask';
+import { useSocket } from '../context/SocketContext'; // Import useSocket
 
-// Re-use the token structure definition
 interface DecodedToken {
   userId: number;
   username: string;
@@ -13,13 +14,13 @@ interface DecodedToken {
   exp: number;
 }
 
-// Define your backend URL (replace with your actual IP/domain if not localhost)
-const API_URL = 'http://192.168.1.13:7000'; // Use your computer's local IP and CORRECT PORT
+const API_URL = 'https://flashgo.onrender.com'; 
 
 export default function LoginScreen() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const { updateAuthToken } = useSocket(); // Get the update function
 
   const handleLogin = async () => {
     if (!username || !password) {
@@ -36,36 +37,34 @@ export default function LoginScreen() {
         body: JSON.stringify({ username, password }),
       });
 
-      // Check if the response status indicates success (e.g., 200 OK)
       if (!response.ok) {
-        // If not OK, try to parse the error message from the JSON body
         let errorMessage = 'Login failed';
         try {
-            const errorData = await response.json(); // Attempt to parse error JSON
+            const errorData = await response.json();
             errorMessage = errorData.message || `Server error: ${response.status}`;
         } catch (parseError) {
-            // If parsing fails, use the status text or a generic message
             errorMessage = response.statusText || `Server error: ${response.status}`;
             console.error("Failed to parse error response:", parseError);
         }
         throw new Error(errorMessage);
       }
 
-      // If response IS ok, parse the success JSON body
       const data = await response.json();
 
       if (data.token) {
         await AsyncStorage.setItem('authToken', data.token);
-        // Decode token to redirect
+        updateAuthToken(data.token); // Notify SocketContext immediately
         const decoded = jwtDecode<DecodedToken>(data.token);
-        Alert.alert('Success', 'Logged in successfully!');
-        // Redirect based on role
+
         if (decoded.role === 'parent') {
-          router.replace('/parent' as Href); // Cast to Href
+          await registerBackgroundSocketTask();
+          router.replace('/parent' as Href);
         } else if (decoded.role === 'child') {
-          router.replace('/child' as Href); // Cast to Href
+          await registerBackgroundSocketTask(); // Add socket registration for child
+          router.replace('/child' as Href);
         } else {
-           router.replace('/login' as Href); // Cast to Href - Fallback
+           console.warn("Login successful but role is not parent or child:", decoded.role);
+           router.replace('/login' as Href);
         }
       } else {
         throw new Error('No token received');
@@ -79,13 +78,12 @@ export default function LoginScreen() {
   };
 
   return (
-    <View style={styles.container} className="bg-gray-100">
-      <Text style={styles.title} className="text-3xl font-bold text-blue-600 mb-8">
+    <View style={styles.container}>
+      <Text style={styles.title}>
         Login
       </Text>
       <TextInput
         style={styles.input}
-        className="bg-white border border-gray-300 rounded-md px-4 py-3 mb-4 w-full"
         placeholder="Username"
         value={username}
         onChangeText={setUsername}
@@ -93,49 +91,76 @@ export default function LoginScreen() {
       />
       <TextInput
         style={styles.input}
-        className="bg-white border border-gray-300 rounded-md px-4 py-3 mb-6 w-full"
         placeholder="Password"
         value={password}
         onChangeText={setPassword}
         secureTextEntry
       />
-      {/* Removed className from Pressable, applying styles directly */}
       <Pressable
-        style={[styles.button, { backgroundColor: '#3b82f6', borderRadius: 6, paddingVertical: 12, paddingHorizontal: 24, width: '100%', alignItems: 'center', marginBottom: 16 }]}
+        style={styles.loginButton}
         onPress={handleLogin}
         disabled={isLoading}
       >
-        <Text style={styles.buttonText} className="text-white font-semibold text-lg">
+        <Text style={styles.loginButtonText}>
           {isLoading ? 'Logging in...' : 'Login'}
         </Text>
       </Pressable>
-       <Pressable onPress={() => router.push('/register' as Href)}> {/* Cast to Href */}
-        {/* Reverted the previous change on Text as it didn't help */}
-        <Text className="text-blue-500 mt-4">Don't have an account? Register</Text>
+      <Pressable 
+        style={styles.registerLink} 
+        onPress={() => router.push('/register' as Href)}
+      > 
+        <Text style={styles.registerLinkText}>
+          Don't have an account? Register
+        </Text>
       </Pressable>
     </View>
   );
 }
 
-// Combine StyleSheet and NativeWind classes
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
     padding: 20,
+    backgroundColor: '#f3f4f6',
   },
   title: {
-    // Base styles if needed, NativeWind overrides/adds
+    fontSize: 30,
+    fontWeight: 'bold',
+    color: '#2563eb',
+    marginBottom: 32,
   },
   input: {
-    // Base styles if needed
-    fontSize: 16, // Example base style
+    backgroundColor: 'white',
+    borderWidth: 1,
+    borderColor: '#d1d5db',
+    borderRadius: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    marginBottom: 16,
+    width: '100%',
+    fontSize: 16,
   },
-   button: {
-    // Base styles if needed
+  loginButton: {
+    backgroundColor: '#3b82f6',
+    borderRadius: 6,
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    width: '100%',
+    alignItems: 'center',
+    marginBottom: 16,
   },
-  buttonText: {
-     // Base styles if needed
+  loginButtonText: {
+    color: 'white',
+    fontWeight: '600',
+    fontSize: 18,
+  },
+  registerLink: {
+    marginTop: 16,
+  },
+  registerLinkText: {
+    color: '#3b82f6',
+    fontSize: 16,
   }
 });

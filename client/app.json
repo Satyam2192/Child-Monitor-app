@@ -9,7 +9,13 @@
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "UIBackgroundModes": [
+          "fetch",
+          "processing"
+        ]
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -17,7 +23,10 @@
         "backgroundColor": "#ffffff"
       },
       "usesCleartextTraffic": true,
-      "package": "com.anonymous.FlashGet"
+      "package": "com.anonymous.FlashGet",
+      "permissions": [
+        "RECEIVE_BOOT_COMPLETED"
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -34,7 +43,8 @@
           "resizeMode": "contain",
           "backgroundColor": "#ffffff"
         }
-      ]
+      ],
+      "expo-task-manager"
     ],
     "experiments": {
       "typedRoutes": true

@@ -1,19 +1,22 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
 import { io, Socket } from 'socket.io-client';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { jwtDecode, JwtPayload } from 'jwt-decode'; // Import jwt-decode
 
-// Define your backend URL (use the same constant as login/register)
-const SOCKET_URL = 'http://192.168.1.13:7000'; // Use your computer's local IP and CORRECT PORT
+// Define your backend URL
+const SOCKET_URL = 'https://flashgo.onrender.com'; // Use hosted backend URL
 
 interface SocketContextType {
   socket: Socket | null;
   isConnected: boolean;
+  updateAuthToken: (token: string | null) => void; // Add function to update token
 }
 
 // Create the context with a default value
 const SocketContext = createContext<SocketContextType>({
   socket: null,
   isConnected: false,
+  updateAuthToken: () => {}, // Default empty function
 });
 
 // Custom hook to use the Socket context
@@ -42,7 +45,24 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children }) => {
   // Effect to manage socket connection based on token
   useEffect(() => {
     if (authToken) {
-      console.log('SocketContext: Auth token found, attempting to connect...');
+      try {
+        // Decode the token to check expiration
+        const decoded = jwtDecode<JwtPayload>(authToken);
+        if (decoded.exp && decoded.exp * 1000 < Date.now()) {
+          console.log('SocketContext: Auth token is expired. Clearing token.');
+          AsyncStorage.removeItem('authToken');
+          setAuthToken(null); // Clear token state
+          return; // Don't attempt to connect with an expired token
+        }
+        // Token is valid or doesn't have an expiration, proceed with connection
+        console.log('SocketContext: Auth token found and valid, attempting to connect...');
+      } catch (error) {
+        console.error('SocketContext: Failed to decode token. Clearing token.', error);
+        AsyncStorage.removeItem('authToken');
+        setAuthToken(null); // Clear token state
+        return; // Don't attempt to connect with an invalid token
+      }
+
       // Initialize socket connection with auth token
       const newSocket = io(SOCKET_URL, {
         auth: {
@@ -104,11 +124,17 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children }) => {
     }
   }, [authToken]); // Re-run effect if authToken changes
 
+  // Function to update the auth token state
+  const updateAuthToken = (token: string | null) => {
+    setAuthToken(token);
+  };
+
   // Memoize the context value to prevent unnecessary re-renders
   const contextValue = useMemo(() => ({
     socket,
     isConnected,
-  }), [socket, isConnected]);
+    updateAuthToken, // Expose the update function
+  }), [socket, isConnected]); // Dependency array doesn't need updateAuthToken as it's stable
 
   return (
     <SocketContext.Provider value={contextValue}>

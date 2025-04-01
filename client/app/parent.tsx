@@ -4,6 +4,8 @@ import MapView, { Marker, Region } from 'react-native-maps';
 import { useSocket } from '../context/SocketContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { jwtDecode } from 'jwt-decode';
+import { router, Href } from 'expo-router'; // Import router and Href
+import { unregisterBackgroundSocketTask } from '../tasks/socketTask'; // Import unregister function
 
 // Define the expected structure of the decoded JWT payload
 interface DecodedToken {
@@ -201,6 +203,21 @@ export default function ParentScreen() {
       }
   };
 
+  // Function to handle logout
+  const handleLogout = async () => {
+      console.log("Logging out...");
+      // Disconnect foreground socket
+      if (socket) {
+          socket.disconnect();
+      }
+      // Unregister background task
+      await unregisterBackgroundSocketTask();
+      // Clear auth token
+      await AsyncStorage.removeItem('authToken');
+      // Navigate to login screen
+      router.replace('/login' as Href); // Use Href type assertion
+  };
+
   const renderChildItem = ({ item }: { item: ChildInfo }) => (
       <View className="p-2 border-b border-gray-200 flex-row justify-between items-center">
           <Text>{item.username} (ID: {item.id})</Text>
@@ -215,7 +232,10 @@ export default function ParentScreen() {
   return (
     <View style={styles.container} className="flex-1">
         <View className="p-4 bg-white border-b border-gray-200">
-            <Text className="text-xl font-bold mb-2">Parent Dashboard ({parentUsername})</Text>
+            <View className="flex-row justify-between items-center mb-2">
+                <Text className="text-xl font-bold">Parent Dashboard ({parentUsername})</Text>
+                <Button title="Logout" onPress={handleLogout} color="red" />
+            </View>
             <Text>Socket Connected: <Text className={isConnected ? 'text-green-600 font-bold' : 'text-red-600 font-bold'}>{isConnected ? 'Yes' : 'No'}</Text></Text>
             {monitoringChildId ? (
                  <View className="mt-2">

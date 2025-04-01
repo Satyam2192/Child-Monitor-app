@@ -1,12 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, Alert, AppState, AppStateStatus, Platform } from 'react-native';
+import { View, Text, StyleSheet, Alert, AppState, AppStateStatus, Platform, Button } from 'react-native'; // Added Button
 import * as Location from 'expo-location';
+import { router, Href } from 'expo-router'; // Added router and Href
 // import { CameraView, useCameraPermissions } from 'expo-camera'; // Removed Camera import
 // import { Audio } from 'expo-av'; // Keep Audio import commented
 import { PermissionStatus } from 'expo-modules-core'; // Import PermissionStatus
 import { useSocket } from '../context/SocketContext'; // Import the custom hook
 import AsyncStorage from '@react-native-async-storage/async-storage'; // Import AsyncStorage
 import { jwtDecode } from 'jwt-decode'; // Import jwtDecode
+// Removed child background task unregister import
+import { BACKGROUND_LOCATION_TASK } from '../tasks/locationTask'; // Import location task name
 
 // Define the expected structure of the decoded JWT payload
 interface DecodedToken {
@@ -68,8 +71,22 @@ export default function ChildScreen() {
               const { status: backgroundStatus } = await Location.requestBackgroundPermissionsAsync();
               if (backgroundStatus !== 'granted') {
                   Alert.alert('Permission Warning', 'Background location permission recommended but not granted.');
+                  // Ensure background task is stopped if permission isn't granted
+                  Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
               } else {
-                  console.log("Background location permission granted.");
+                  console.log("Background location permission granted. Starting background task...");
+                  // Start background location updates
+                  await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
+                      accuracy: Location.Accuracy.Balanced, // Balanced accuracy for background
+                      timeInterval: 5 * 60 * 1000, // Approx every 5 minutes (adjust as needed)
+                      distanceInterval: 50, // Update if moved 50 meters
+                      showsBackgroundLocationIndicator: true, // Show indicator (required on iOS)
+                      foregroundService: { // Android foreground service for better reliability
+                          notificationTitle: "Tracking location",
+                          notificationBody: "FlashGet is tracking your location in the background.",
+                          notificationColor: "#ffffff", // Optional
+                      },
+                  });
               }
           }
       } catch (err) {
@@ -247,6 +264,24 @@ export default function ChildScreen() {
     console.log('AppState', appState.current);
   };
 
+  // --- Logout Handler ---
+  const handleLogout = async () => {
+    console.log("Child logging out...");
+    // Stop location tracking first
+    stopLocationTracking();
+    // Disconnect foreground socket
+    if (socket) {
+        socket.disconnect();
+    }
+    // Stop background location task
+    await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
+    console.log("Stopped background location task.");
+    // Clear auth token
+    await AsyncStorage.removeItem('authToken');
+    // Navigate to login screen
+    router.replace('/login' as Href); // Use Href type assertion
+  };
+
 
   return (
     <View style={styles.container} className="bg-gray-100 p-5">
@@ -271,6 +306,11 @@ export default function ChildScreen() {
          <Text className="text-lg font-semibold mb-2">Info:</Text>
          <Text className="text-gray-600">Location updates are sent automatically.</Text>
          <Text className="text-gray-600">Parent can request a manual location refresh.</Text>
+      </View>
+
+      {/* Logout Button */}
+      <View className="mt-6 w-full">
+        <Button title="Logout" onPress={handleLogout} color="red" />
       </View>
     </View>
   );

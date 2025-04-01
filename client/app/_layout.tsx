@@ -1,9 +1,12 @@
 import { Stack } from "expo-router";
-import React from "react";
+import React from "react"; // Removed useEffect
 import "./globals.css"; // Ensure Tailwind is imported
 import { SocketProvider } from "../context/SocketContext"; // Import the provider
+// Removed import for registerBackgroundSocketTask
 
 export default function RootLayout() {
+  // Background task registration moved to login success
+
   // Ensure no leading/trailing whitespace around SocketProvider
   return (<SocketProvider>
       <Stack screenOptions={{ headerShown: false }}>
