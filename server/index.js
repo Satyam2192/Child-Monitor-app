@@ -6,6 +6,7 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const mongoose = require('mongoose'); // Import mongoose
 const { Expo } = require('expo-server-sdk'); // Import Expo SDK
+const crypto = require('crypto'); // Import crypto for code generation
 
 const app = express();
 app.use(express.json()); // Middleware to parse JSON bodies
@@ -261,18 +262,22 @@ app.get('/', (req, res) => {
   res.send('FlashGet Server is running!');
 });
 
-// --- In-memory tracking of connected users ---
+// --- In-memory tracking ---
 const connectedParents = new Map(); // Map<socket.id, user info>
 const connectedChildren = new Map(); // Map<userId, { socketId: string, username: string }>
+const pendingConnections = new Map(); // Map<connectionCode, { userId: number, socketId: string, expires: number }>
+const CONNECTION_CODE_EXPIRY_MS = 5 * 60 * 1000; // 5 minutes
 
-// Helper function to get children list for parents
-const getChildrenList = () => {
-    const children = [];
-    for (const [userId, childInfo] of connectedChildren.entries()) {
-        children.push({ id: userId, username: childInfo.username });
-    }
-    return children;
+// Helper function to generate a unique connection code
+const generateConnectionCode = (length = 6) => {
+    let code;
+    do {
+        code = crypto.randomBytes(Math.ceil(length / 2)).toString('hex').slice(0, length).toUpperCase();
+    } while (pendingConnections.has(code)); // Ensure uniqueness
+    return code;
 };
+
+// REMOVED getChildrenList function - list will be fetched from DB based on links
 
 // Helper function to broadcast updates to specific parents (Sockets)
 const broadcastToSpecificParentsSockets = (parentIds, event, data) => {
@@ -362,41 +367,97 @@ io.on('connection', (socket) => {
   const { userId, role, username, linkedUserIds } = socket.user; // Get linked IDs from token
   console.log(`User connected: ${username} (ID: ${socket.id}, Role: ${role}, Linked: ${linkedUserIds?.join(',')})`);
 
-  // --- Track connected users ---
+  // --- Track connected users & Send Initial Data ---
   if (role === 'parent') {
       connectedParents.set(socket.id, socket.user);
-      // TODO: Send only *linked* children list? Requires fetching linked children details.
-      // For now, send all connected children.
-      socket.emit('update_children_list', getChildrenList());
       console.log(`Parent ${username} connected. Total parents: ${connectedParents.size}`);
+      // Fetch and send the list of ALL linked children from DB
+      const fetchAndSendLinkedChildren = async () => {
+          try {
+              const parentData = await User.findOne({ id: userId }).select('linkedUserIds').lean();
+              const linkedIds = parentData?.linkedUserIds || [];
+              if (linkedIds.length > 0) {
+                  const childrenDetails = await User.find({ id: { $in: linkedIds }, role: 'child' })
+                                                    .select('id username') // Select only needed fields
+                                                    .lean(); // Use lean for performance
+                  // Log the actual structure being sent
+                  console.log(`Data structure being sent for update_children_list to parent ${username}:`, JSON.stringify(childrenDetails));
+                  socket.emit('update_children_list', childrenDetails);
+              } else {
+                  console.log(`Parent ${username} has no linked children.`);
+                  socket.emit('update_children_list', []); // Send empty list
+              }
+          } catch (error) {
+              console.error(`Error fetching linked children for parent ${userId}:`, error);
+              socket.emit('update_children_list', []); // Send empty list on error
+          }
+      };
+      // fetchAndSendLinkedChildren(); // REMOVED - Client will request the list
+
   } else if (role === 'child') {
-      connectedChildren.set(userId, { socketId: socket.id, username: username });
-      // Notify only linked parents about this child connecting
-      if (linkedUserIds && linkedUserIds.length > 0) {
-          broadcastToSpecificParentsSockets(linkedUserIds, 'update_children_list', getChildrenList());
+      // Only set the primary connection if the child isn't already tracked
+      // This prevents background tasks from overwriting the main socket ID
+      if (!connectedChildren.has(userId)) {
+          connectedChildren.set(userId, { socketId: socket.id, username: username });
+          console.log(`Child ${username} (ID: ${userId}) primary connection established. Socket ID: ${socket.id}. Total children: ${connectedChildren.size}`);
+      } else {
+          // Log if a different socket connects for the same child (likely background task)
+          console.log(`Child ${username} (ID: ${userId}) already tracked with socket ${connectedChildren.get(userId).socketId}. New socket ID ${socket.id} likely from background task.`);
       }
-      console.log(`Child ${username} (ID: ${userId}) connected. Total children: ${connectedChildren.size}`);
+      // Parent gets the full list on their connection. Status can be inferred later.
       const childRoomName = `child_${userId}`;
       socket.join(childRoomName);
       console.log(`Child ${username} joined room: ${childRoomName}`);
+
+      // Generate and send connection code
+      const connectionCode = generateConnectionCode();
+      const expires = Date.now() + CONNECTION_CODE_EXPIRY_MS;
+      pendingConnections.set(connectionCode, { userId, socketId: socket.id, expires });
+      console.log(`Generated connection code ${connectionCode} for child ${userId}, expires at ${new Date(expires).toLocaleTimeString()}`);
+      // socket.emit('receive_connection_code', { code: connectionCode }); // REMOVED - Client will request it
+
+      // Optional: Set a timeout to automatically remove the code if not used
+      setTimeout(() => {
+          const entry = pendingConnections.get(connectionCode);
+          if (entry && entry.socketId === socket.id) { // Check if it's still the same entry
+              console.log(`Connection code ${connectionCode} expired for child ${userId}. Removing.`);
+              pendingConnections.delete(connectionCode);
+          }
+      }, CONNECTION_CODE_EXPIRY_MS + 1000); // Add a small buffer
   }
 
   // --- Specific Room Joining ---
-  socket.on('join_child_room', (targetChildUserId) => {
+  socket.on('join_child_room', async (targetChildUserId) => { // Make handler async
+    // Log the state when attempting to join
+    console.log(`DEBUG: Parent ${username} (ID: ${userId}) attempting to join room for child ${targetChildUserId}.`);
+    // console.log(`DEBUG: socket.user.linkedUserIds (from token):`, socket.user.linkedUserIds); // Keep for reference if needed
+
     if (role === 'parent') {
-      // Optional: Check if targetChildUserId is in parent's linkedUserIds
-      if (linkedUserIds && !linkedUserIds.includes(targetChildUserId)) {
-          console.log(`Parent ${username} attempted to join room for unlinked child ${targetChildUserId}`);
-          return socket.emit('join_room_error', { message: `You are not linked to child ID ${targetChildUserId}.` });
-      }
-      const targetRoom = `child_${targetChildUserId}`;
-      if (connectedChildren.has(targetChildUserId)) {
-            console.log(`Parent ${username} (ID: ${userId}) joining specific room: ${targetRoom}`);
-            socket.join(targetRoom);
-            socket.emit('joined_room_ack', { room: targetRoom, childId: targetChildUserId });
-      } else {
-         console.log(`Parent ${username} attempted to join non-existent/offline child room for ID: ${targetChildUserId}`);
-         socket.emit('join_room_error', { message: `Child with ID ${targetChildUserId} not found or is offline.` });
+      try {
+        // Fetch fresh linked IDs from DB
+        const parentData = await User.findOne({ id: userId }).select('linkedUserIds').lean();
+        const parentLinkedIds = parentData?.linkedUserIds || [];
+        console.log(`DEBUG: Freshly fetched linkedUserIds from DB for parent ${userId}:`, parentLinkedIds);
+
+        // Check using fresh data
+        if (!parentLinkedIds.includes(targetChildUserId)) {
+            console.log(`Parent ${username} attempted to join room for unlinked child ${targetChildUserId}. Linked IDs from DB: [${parentLinkedIds.join(',')}]`);
+            return socket.emit('join_room_error', { message: `You are not linked to child ID ${targetChildUserId}.` });
+        }
+
+        // Proceed if linked
+        const targetRoom = `child_${targetChildUserId}`;
+        if (connectedChildren.has(targetChildUserId)) {
+              console.log(`Parent ${username} (ID: ${userId}) joining specific room: ${targetRoom}`);
+              socket.join(targetRoom);
+              socket.emit('joined_room_ack', { room: targetRoom, childId: targetChildUserId });
+        } else {
+           console.log(`Parent ${username} attempted to join non-existent/offline child room for ID: ${targetChildUserId}`);
+           socket.emit('join_room_error', { message: `Child with ID ${targetChildUserId} not found or is offline.` });
+        }
+      } catch (error) {
+          console.error(`Error checking link or joining room for parent ${userId} and child ${targetChildUserId}:`, error);
+          socket.emit('join_room_error', { message: 'Server error checking link status.' });
       }
     } else {
       console.log(`Non-parent user ${username} attempted to join child room.`);
@@ -410,13 +471,193 @@ io.on('connection', (socket) => {
         connectedParents.delete(socket.id);
         console.log(`Parent ${username} disconnected. Total parents: ${connectedParents.size}`);
     } else if (role === 'child') {
-        connectedChildren.delete(userId);
-        // Notify only linked parents that this child disconnected
-        if (linkedUserIds && linkedUserIds.length > 0) {
-             broadcastToSpecificParentsSockets(linkedUserIds, 'update_children_list', getChildrenList());
+        // Clean up pending connection code if child disconnects
+        pendingConnections.forEach((value, key) => {
+            if (value.userId === userId && value.socketId === socket.id) { // Only remove code if the disconnecting socket is the one that generated it
+                console.log(`Child ${userId} disconnected (socket ${socket.id}), removing pending connection code ${key}`);
+                pendingConnections.delete(key);
+            }
+        });
+        // Only remove from connectedChildren if the disconnecting socket is the primary one stored
+        const trackedChild = connectedChildren.get(userId);
+        if (trackedChild && trackedChild.socketId === socket.id) {
+            connectedChildren.delete(userId);
+            console.log(`Child ${username} (ID: ${userId}) primary connection disconnected. Total children: ${connectedChildren.size}`);
+        } else {
+            console.log(`Child ${username} (ID: ${userId}) disconnected via non-primary socket ${socket.id}. Primary connection remains tracked (if any).`);
         }
-        console.log(`Child ${username} (ID: ${userId}) disconnected. Total children: ${connectedChildren.size}`);
-    }
+        // Child disconnection no longer triggers update_children_list for parents directly
+      }
+  });
+
+  // --- Handle Parent Request for Children List (New) ---
+  socket.on('request_children_list', async () => {
+      if (role === 'parent') {
+          console.log(`Parent ${username} requested children list.`);
+          try {
+              // Use socket.user.userId which should be reliable here
+              const parentData = await User.findOne({ id: socket.user.userId }).select('linkedUserIds').lean();
+              const linkedIds = parentData?.linkedUserIds || [];
+              if (linkedIds.length > 0) {
+                  const childrenDetails = await User.find({ id: { $in: linkedIds }, role: 'child' })
+                                                    .select('id username')
+                                                    .lean();
+                  console.log(`Data structure being sent for update_children_list to parent ${username} (on request):`, JSON.stringify(childrenDetails));
+                  socket.emit('update_children_list', childrenDetails);
+              } else {
+                  console.log(`Parent ${username} has no linked children (on request).`);
+                  socket.emit('update_children_list', []); // Send empty list
+              }
+          } catch (error) {
+              console.error(`Error fetching linked children for parent ${socket.user.userId} (on request):`, error);
+              socket.emit('update_children_list', []); // Send empty list on error
+          }
+      } else {
+          console.log(`Non-parent user ${username} requested children list.`);
+      }
+  });
+
+  // --- Handle Client Request for Code (New) ---
+  socket.on('request_connection_code', () => {
+      if (role === 'child') {
+          let existingCode = null;
+          // Find the code associated with this child's userId
+          pendingConnections.forEach((value, key) => {
+              // Ensure we find the code associated with the CURRENT socket ID if multiple exist temporarily
+              if (value.userId === userId && value.socketId === socket.id) {
+                  existingCode = key;
+              }
+          });
+
+          if (existingCode) {
+              const entry = pendingConnections.get(existingCode);
+              if (Date.now() < entry.expires) {
+                  console.log(`Child ${userId} requested code. Sending existing code: ${existingCode}`);
+                  socket.emit('receive_connection_code', { code: existingCode });
+              } else {
+                  console.log(`Child ${userId} requested code, but existing code ${existingCode} expired. Generating new one.`);
+                  pendingConnections.delete(existingCode); // Delete expired
+                  // Generate and store a new one
+                  const newConnectionCode = generateConnectionCode();
+                  const newExpires = Date.now() + CONNECTION_CODE_EXPIRY_MS;
+                  pendingConnections.set(newConnectionCode, { userId, socketId: socket.id, expires: newExpires });
+                  console.log(`Generated new connection code ${newConnectionCode} for child ${userId}, expires at ${new Date(newExpires).toLocaleTimeString()}`);
+                  socket.emit('receive_connection_code', { code: newConnectionCode });
+                  // Set new timeout
+                  setTimeout(() => {
+                      const currentEntry = pendingConnections.get(newConnectionCode);
+                      if (currentEntry && currentEntry.socketId === socket.id) {
+                          console.log(`New connection code ${newConnectionCode} expired for child ${userId}. Removing.`);
+                          pendingConnections.delete(newConnectionCode);
+                      }
+                  }, CONNECTION_CODE_EXPIRY_MS + 1000);
+              }
+          } else {
+              console.log(`Child ${userId} requested code, but none found (socket ${socket.id}). Generating new one.`);
+              // Generate and store a new one if none exists for this socket
+              const newConnectionCode = generateConnectionCode();
+              const newExpires = Date.now() + CONNECTION_CODE_EXPIRY_MS;
+              pendingConnections.set(newConnectionCode, { userId, socketId: socket.id, expires: newExpires });
+              console.log(`Generated new connection code ${newConnectionCode} for child ${userId}, expires at ${new Date(newExpires).toLocaleTimeString()}`);
+              socket.emit('receive_connection_code', { code: newConnectionCode });
+               // Set new timeout
+               setTimeout(() => {
+                  const currentEntry = pendingConnections.get(newConnectionCode);
+                  if (currentEntry && currentEntry.socketId === socket.id) {
+                      console.log(`New connection code ${newConnectionCode} expired for child ${userId}. Removing.`);
+                      pendingConnections.delete(newConnectionCode);
+                  }
+              }, CONNECTION_CODE_EXPIRY_MS + 1000);
+          }
+      } else {
+          console.log(`Non-child user ${username} requested connection code.`);
+      }
+  });
+
+
+  // --- Link Child Handler (New) ---
+  socket.on('link_child_with_code', async (data) => {
+      if (role !== 'parent') {
+          console.log(`Non-parent user ${username} attempted to link child.`);
+          return socket.emit('link_child_error', { message: 'Only parents can link children.' });
+      }
+
+      const { connectionCode } = data;
+      if (!connectionCode || typeof connectionCode !== 'string') {
+          return socket.emit('link_child_error', { message: 'Invalid connection code format.' });
+      }
+
+      const connectionEntry = pendingConnections.get(connectionCode.toUpperCase());
+
+      if (!connectionEntry) {
+          console.log(`Parent ${username} used invalid code: ${connectionCode}`);
+          return socket.emit('link_child_error', { message: 'Invalid or expired connection code.' });
+      }
+
+      if (Date.now() > connectionEntry.expires) {
+          console.log(`Parent ${username} used expired code: ${connectionCode}`);
+          pendingConnections.delete(connectionCode.toUpperCase()); // Clean up expired code
+          return socket.emit('link_child_error', { message: 'Connection code has expired.' });
+      }
+
+      const childUserId = connectionEntry.userId;
+      const parentUserId = userId; // The current socket user's ID
+
+      // Check if already linked
+      const parentUser = await User.findOne({ id: parentUserId }).select('linkedUserIds').lean();
+      if (parentUser?.linkedUserIds?.includes(childUserId)) {
+          console.log(`Parent ${parentUserId} is already linked with child ${childUserId}. Code: ${connectionCode}`);
+          pendingConnections.delete(connectionCode.toUpperCase()); // Remove used code
+          // Fetch child info to send back
+          const childInfo = connectedChildren.get(childUserId) || await User.findOne({ id: childUserId }).select('id username').lean();
+          return socket.emit('link_child_success', {
+              message: `You are already linked with ${childInfo?.username || `Child ID ${childUserId}`}.`,
+              child: { id: childUserId, username: childInfo?.username || 'Unknown' }
+          });
+      }
+
+      try {
+          // Link parent to child
+          await User.updateOne({ id: parentUserId }, { $addToSet: { linkedUserIds: childUserId } });
+          // Link child to parent
+          await User.updateOne({ id: childUserId }, { $addToSet: { linkedUserIds: parentUserId } });
+
+          console.log(`Successfully linked Parent ${parentUserId} with Child ${childUserId} using code ${connectionCode}`);
+          pendingConnections.delete(connectionCode.toUpperCase()); // Remove used code
+
+          // Fetch child info to send back
+          const childInfo = connectedChildren.get(childUserId) || await User.findOne({ id: childUserId }).select('id username').lean();
+          if (!childInfo) {
+              console.warn(`Could not fetch child info for ID ${childUserId} after linking.`);
+          }
+
+          // Send success message back to parent
+          socket.emit('link_child_success', {
+              message: `Successfully linked with ${childInfo?.username || `Child ID ${childUserId}`}.`,
+              child: { id: childUserId, username: childInfo?.username || 'Unknown' }
+          });
+
+          // Update the parent's children list immediately by refetching from DB
+           const updatedParentData = await User.findOne({ id: parentUserId }).select('linkedUserIds').lean();
+           const updatedLinkedIds = updatedParentData?.linkedUserIds || [];
+           if (updatedLinkedIds.length > 0) {
+               const childrenDetails = await User.find({ id: { $in: updatedLinkedIds }, role: 'child' })
+                                                 .select('id username')
+                                                 .lean();
+                // Log the actual structure being sent
+               console.log(`Data structure being sent for update_children_list to parent ${username} after linking:`, JSON.stringify(childrenDetails));
+               socket.emit('update_children_list', childrenDetails);
+           } else {
+               socket.emit('update_children_list', []); // Should not happen right after linking, but safe fallback
+           }
+
+          // Update the parent's user object on the socket
+          socket.user.linkedUserIds = updatedLinkedIds; // Use the updated list
+
+      } catch (error) {
+          console.error(`Database error linking Parent ${parentUserId} and Child ${childUserId}:`, error);
+          socket.emit('link_child_error', { message: 'Database error during linking.' });
+      }
   });
 
   // --- Location Data Handler ---

@@ -5,6 +5,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { jwtDecode } from 'jwt-decode';
 import { registerBackgroundSocketTask } from '../tasks/socketTask';
 import { useSocket } from '../context/SocketContext'; // Import useSocket
+import { registerForPushNotificationsAsync } from '../utils/notifications'; // Import notification registration
 
 interface DecodedToken {
   userId: number;
@@ -14,7 +15,7 @@ interface DecodedToken {
   exp: number;
 }
 
-const API_URL = 'https://flashgo.onrender.com'; 
+const API_URL = 'http://192.168.1.13:7000'; // Updated server URL
 
 export default function LoginScreen() {
   const [username, setUsername] = useState('');
@@ -57,10 +58,11 @@ export default function LoginScreen() {
         const decoded = jwtDecode<DecodedToken>(data.token);
 
         if (decoded.role === 'parent') {
-          await registerBackgroundSocketTask();
+          await registerBackgroundSocketTask(); // Keep for parent background fetch
+          await registerForPushNotificationsAsync(); // Register parent for push notifications
           router.replace('/parent' as Href);
         } else if (decoded.role === 'child') {
-          await registerBackgroundSocketTask(); // Add socket registration for child
+          // Remove registerBackgroundSocketTask for child - locationTask handles background sending
           router.replace('/child' as Href);
         } else {
            console.warn("Login successful but role is not parent or child:", decoded.role);

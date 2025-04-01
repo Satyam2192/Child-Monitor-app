@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, Alert, AppState, AppStateStatus, Platform, Button } from 'react-native'; // Added Button
+import { View, Text, StyleSheet, Alert, AppState, AppStateStatus, Platform, Button, ActivityIndicator } from 'react-native'; // Added Button, ActivityIndicator
 import * as Location from 'expo-location';
 import { router, Href } from 'expo-router'; // Added router and Href
 // import { CameraView, useCameraPermissions } from 'expo-camera'; // Removed Camera import
@@ -26,15 +26,16 @@ export default function ChildScreen() {
   // Use the hooks for permissions
   // const [cameraPermission, requestCameraPermission] = useCameraPermissions(); // Removed Camera permission hook
   /* const [audioPermissionStatus, setAudioPermissionStatus] = useState<PermissionStatus | null>(null); */ // Comment out audio state
-  const [isTrackingLocation, setIsTrackingLocation] = useState(false); // Renamed for clarity
+  // const [isTrackingLocation, setIsTrackingLocation] = useState(false); // Removed foreground tracking state
   // const [isStreamingCamera, setIsStreamingCamera] = useState(false); // Removed Camera state
   /* const [isStreamingAudio, setIsStreamingAudio] = useState(false); */ // Comment out audio state
-  const locationSubscription = useRef<Location.LocationSubscription | null>(null);
+  // const locationSubscription = useRef<Location.LocationSubscription | null>(null); // Removed foreground tracking ref
   // const cameraInterval = useRef<NodeJS.Timeout | null>(null); // Removed Camera ref
   /* const audioRecording = useRef<Audio.Recording | null>(null); */ // Comment out audio ref
   const appState = useRef(AppState.currentState);
   // const cameraRef = useRef<CameraView>(null); // Removed Camera ref
   const [userInfo, setUserInfo] = useState<DecodedToken | null>(null); // State for decoded token
+  const [connectionCode, setConnectionCode] = useState<string | null>(null); // State for connection code
 
   // --- Effect to load user info from token ---
   useEffect(() => {
@@ -134,23 +135,9 @@ export default function ChildScreen() {
     requestPermissions();
   }, []); // Empty dependency array ensures this runs only once on mount
 
-  // --- Location Tracking Logic (Starts automatically if connected) ---
-  useEffect(() => {
-    let shouldTrackLocation = locationPermissionStatus === 'granted' && isConnected && socket;
-
-    if (shouldTrackLocation) {
-        startLocationTracking();
-    } else {
-        stopLocationTracking();
-    }
-
-    // Cleanup function: Stop location tracking when component unmounts or dependencies change
-    return () => {
-      console.log("Cleanup: Stopping location tracking.");
-      stopLocationTracking();
-    };
-    // Dependencies: Only location permission, connection status, socket instance
-  }, [locationPermissionStatus, isConnected, socket]);
+  // --- Removed Foreground Location Tracking Logic ---
+  // The background task (startLocationUpdatesAsync) handles sending location
+  // updates in both foreground and background.
 
 
   // --- Socket Event Listeners for Location Refresh ---
@@ -188,47 +175,44 @@ export default function ChildScreen() {
   }, [socket, isConnected, locationPermissionStatus]); // Add locationPermissionStatus dependency
 
 
-  const startLocationTracking = async () => {
-    if (isTrackingLocation) return;
-     console.log("Attempting to start Location.watchPositionAsync...");
-    try {
-        locationSubscription.current?.remove(); // Ensure previous is removed
-        locationSubscription.current = await Location.watchPositionAsync(
-            {
-                accuracy: Location.Accuracy.BestForNavigation,
-                timeInterval: 5000,
-                distanceInterval: 10,
-            },
-            (location) => {
-                if (socket && isConnected) {
-                    socket.emit('send_location', {
-                        latitude: location.coords.latitude,
-                        longitude: location.coords.longitude,
-                        timestamp: location.timestamp,
-                    });
-                }
-            }
-        );
-        setIsTrackingLocation(true);
-        console.log("Location tracking started successfully.");
-    } catch (error) {
-        console.error("Error starting location tracking:", error);
-        Alert.alert("Tracking Error", "Could not start location tracking.");
-        setIsTrackingLocation(false);
-    }
-  };
+  // --- Socket Event Listener for Connection Code ---
+  useEffect(() => {
+      if (socket && isConnected) {
+          const handleReceiveCode = (data: { code: string }) => {
+              console.log("Received connection code:", data.code);
+              setConnectionCode(data.code);
+          };
 
-  const stopLocationTracking = () => {
-    if (locationSubscription.current) {
-      console.log("Stopping location tracking...");
-      locationSubscription.current.remove();
-      locationSubscription.current = null;
-    }
-    if (isTrackingLocation) {
-        setIsTrackingLocation(false);
-        console.log("Location tracking stopped.");
-    }
-  };
+           // Set up listener first
+           socket.on('receive_connection_code', handleReceiveCode);
+
+           // Then request the code from the server
+           console.log("Child requesting connection code from server...");
+           socket.emit('request_connection_code');
+
+           // Optional fallback timer removed as client now explicitly requests
+           // const timer = setTimeout(() => {
+          //     if (!connectionCode && socket.connected) {
+          //         console.log("Requesting connection code manually...");
+          //         socket.emit('request_connection_code');
+          //     }
+          // }, 3000);
+
+
+          return () => {
+              console.log("Cleaning up connection code listener.");
+              socket.off('receive_connection_code', handleReceiveCode);
+              // clearTimeout(timer);
+          };
+      } else {
+          // Reset code if disconnected
+          setConnectionCode(null);
+      }
+  }, [socket, isConnected]); // Re-run if socket or connection status changes
+
+
+  // --- Removed startLocationTracking and stopLocationTracking functions ---
+
 
   // --- Removed start/stopCameraStreaming ---
   /*
@@ -267,8 +251,7 @@ export default function ChildScreen() {
   // --- Logout Handler ---
   const handleLogout = async () => {
     console.log("Child logging out...");
-    // Stop location tracking first
-    stopLocationTracking();
+    // Stop foreground tracking removed
     // Disconnect foreground socket
     if (socket) {
         socket.disconnect();
@@ -278,6 +261,8 @@ export default function ChildScreen() {
     console.log("Stopped background location task.");
     // Clear auth token
     await AsyncStorage.removeItem('authToken');
+    // Clear connection code state
+    setConnectionCode(null);
     // Navigate to login screen
     router.replace('/login' as Href); // Use Href type assertion
   };
@@ -286,15 +271,30 @@ export default function ChildScreen() {
   return (
     <View style={styles.container} className="bg-gray-100 p-5">
       <Text style={styles.title} className="text-2xl font-bold text-green-700 mb-2">Child Mode Active</Text>
-      <Text className="text-lg font-semibold mb-4">Your ID: <Text className="text-blue-600 font-bold text-xl">{userInfo?.userId ?? '...'}</Text></Text>
+      <Text className="text-lg font-semibold mb-1">Username: <Text className="font-bold">{userInfo?.username ?? 'Loading...'}</Text></Text>
+      <Text className="text-base mb-4">Your User ID: <Text className="font-bold">{userInfo?.userId ?? '...'}</Text></Text>
+
+      {/* Connection Code Block */}
+      <View className="w-full p-4 bg-blue-100 border border-blue-300 rounded-lg shadow mb-4 items-center">
+          <Text className="text-lg font-semibold mb-2 text-blue-800">Your Connection Code</Text>
+          {connectionCode ? (
+              <Text selectable={true} className="text-3xl font-bold text-blue-900 tracking-widest bg-white px-3 py-1 rounded border border-blue-200">{connectionCode}</Text>
+          ) : (
+              <View className="flex-row items-center">
+                  <ActivityIndicator size="small" color="#1E40AF" />
+                  <Text className="ml-2 text-blue-700">Waiting for code...</Text>
+              </View>
+          )}
+          <Text className="text-sm text-center mt-2 text-blue-700">Give this code to your parent to link accounts.</Text>
+      </View>
 
       {/* Status block */}
       <View className="w-full p-4 bg-white rounded-lg shadow mb-4">
         <Text className="text-lg font-semibold mb-2">Status:</Text>
         <Text>Username: <Text className="font-bold">{userInfo?.username ?? 'Loading...'}</Text></Text>
-        <Text>Socket Connected: <Text className={isConnected ? 'text-green-600 font-bold' : 'text-red-600 font-bold'}>{isConnected ? 'Yes' : 'No'}</Text></Text>
+         <Text>Socket Connected: <Text className={isConnected ? 'text-green-600 font-bold' : 'text-red-600 font-bold'}>{isConnected ? 'Yes' : 'No'}</Text></Text>
          <Text>Location Permission: <Text className={locationPermissionStatus === 'granted' ? 'text-green-600' : 'text-red-600'}>{locationPermissionStatus || 'Checking...'}</Text></Text>
-         <Text>Location Tracking: <Text className={isTrackingLocation ? 'text-green-600 font-bold' : 'text-gray-500'}>{isTrackingLocation ? 'Active' : 'Inactive'}</Text></Text>
+         {/* Removed foreground tracking status text */}
          {/* Removed Camera/Audio Status */}
       </View>
 

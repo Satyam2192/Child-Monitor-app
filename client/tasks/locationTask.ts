@@ -5,7 +5,7 @@ import { jwtDecode, JwtPayload } from 'jwt-decode';
 import { io, Socket } from 'socket.io-client';
 
 export const BACKGROUND_LOCATION_TASK = 'BACKGROUND_LOCATION_TASK';
-const SOCKET_URL = 'https://flashgo.onrender.com'; // Ensure this matches context
+const SOCKET_URL = 'http://192.168.1.13:7000'; // Ensure this matches context
 
 // Define the expected structure of the decoded JWT payload for role check
 interface DecodedToken extends JwtPayload {

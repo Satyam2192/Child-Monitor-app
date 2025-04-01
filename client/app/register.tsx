@@ -3,7 +3,7 @@ import { View, Text, TextInput, StyleSheet, Alert, Pressable } from 'react-nativ
 import { router, Href } from 'expo-router'; // Import Href
 
 // Define your backend URL
-const API_URL = 'https://flashgo.onrender.com'; // Use hosted backend URL
+const API_URL = 'http://192.168.1.13:7000'; // Use hosted backend URL
 
 type Role = 'parent' | 'child';
 

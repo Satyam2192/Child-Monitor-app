@@ -2,145 +2,136 @@ import * as TaskManager from 'expo-task-manager';
 import * as BackgroundFetch from 'expo-background-fetch';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { jwtDecode, JwtPayload } from 'jwt-decode';
-import { io, Socket } from 'socket.io-client';
 
-export const BACKGROUND_SOCKET_TASK = 'BACKGROUND_SOCKET_TASK';
-const SOCKET_URL = 'https://flashgo.onrender.com'; // Ensure this matches your context
+export const BACKGROUND_SOCKET_TASK = 'BACKGROUND_FETCH_LOCATION_TASK'; // Renamed for clarity
+const API_URL = 'http://192.168.1.13:7000'; // Ensure this matches your API URL
+const LAST_LOCATION_STORAGE_KEY = 'lastFetchedChildLocation';
 
-let backgroundSocket: Socket | null = null; // Keep a reference if needed
+// Define the expected structure of the decoded JWT payload for role check
+interface DecodedToken extends JwtPayload {
+  userId: number;
+  username: string;
+  role: 'parent' | 'child';
+}
 
 TaskManager.defineTask(BACKGROUND_SOCKET_TASK, async () => {
   const now = new Date();
-  console.log(`[${now.toISOString()}] Running background socket task...`);
+  console.log(`[${now.toISOString()}] Running ${BACKGROUND_SOCKET_TASK}...`);
 
-  // Optimization: Check if socket is already connected and healthy
-  if (backgroundSocket?.connected) {
-    console.log('[Background Task] Socket already connected. Exiting task early.');
-    // Optional: Implement a lightweight ping to server if required to keep connection alive
-    // backgroundSocket.emit('ping');
-    return BackgroundFetch.BackgroundFetchResult.NoData; // No significant change needed
-  }
-
-  console.log('[Background Task] Socket not connected or instance lost. Proceeding with connection logic.');
   try {
     const authToken = await AsyncStorage.getItem('authToken');
 
     if (!authToken) {
-      console.log('[Background Task] No auth token found. Stopping task.');
-      // Disconnect if socket exists from a previous run
-      if (backgroundSocket?.connected) {
-        backgroundSocket.disconnect();
-        backgroundSocket = null;
-      }
+      console.log(`[${BACKGROUND_SOCKET_TASK}] No auth token found. Stopping task.`);
+      // Optionally unregister task if token is permanently gone?
+      // await BackgroundFetch.unregisterTaskAsync(BACKGROUND_SOCKET_TASK);
       return BackgroundFetch.BackgroundFetchResult.NoData;
     }
 
-    // Check token validity
+    // Check token validity and role
+    let decoded: DecodedToken;
     try {
-      const decoded = jwtDecode<JwtPayload>(authToken);
+      decoded = jwtDecode<DecodedToken>(authToken);
       if (decoded.exp && decoded.exp * 1000 < Date.now()) {
-        console.log('[Background Task] Auth token expired. Clearing token.');
+        console.log(`[${BACKGROUND_SOCKET_TASK}] Auth token expired. Clearing token.`);
         await AsyncStorage.removeItem('authToken');
-        if (backgroundSocket?.connected) {
-          backgroundSocket.disconnect();
-          backgroundSocket = null;
-        }
+        await AsyncStorage.removeItem(LAST_LOCATION_STORAGE_KEY); // Clear stale location
+        // Optionally unregister task
+        // await BackgroundFetch.unregisterTaskAsync(BACKGROUND_SOCKET_TASK);
         return BackgroundFetch.BackgroundFetchResult.NoData;
       }
-    } catch (error) {
-      console.error('[Background Task] Failed to decode token. Clearing token.', error);
-      await AsyncStorage.removeItem('authToken');
-      if (backgroundSocket?.connected) {
-        backgroundSocket.disconnect();
-        backgroundSocket = null;
+
+      // IMPORTANT: This task should only run for the parent
+      if (decoded.role !== 'parent') {
+        console.log(`[${BACKGROUND_SOCKET_TASK}] User role is not parent (${decoded.role}). Stopping task and unregistering.`);
+        await BackgroundFetch.unregisterTaskAsync(BACKGROUND_SOCKET_TASK); // Unregister if role is wrong
+        return BackgroundFetch.BackgroundFetchResult.NoData;
       }
+
+    } catch (error) {
+      console.error(`[${BACKGROUND_SOCKET_TASK}] Failed to decode token. Clearing token.`, error);
+      await AsyncStorage.removeItem('authToken');
+      await AsyncStorage.removeItem(LAST_LOCATION_STORAGE_KEY); // Clear stale location
+      // Optionally unregister task
+      // await BackgroundFetch.unregisterTaskAsync(BACKGROUND_SOCKET_TASK);
       return BackgroundFetch.BackgroundFetchResult.Failed;
     }
 
-    // If socket exists and is connected, maybe just return? Or add a ping?
-    // For simplicity, we'll try connecting if not already connected.
-    if (!backgroundSocket || !backgroundSocket.connected) {
-      console.log('[Background Task] Token valid, attempting to connect/reconnect socket...');
+    // --- Fetch Child's Last Location (Parent Role Only) ---
+    console.log(`[${BACKGROUND_SOCKET_TASK}] Parent user detected. Fetching child's last location...`);
+    try {
+      // *** ASSUMPTION: Replace with your actual API endpoint ***
+      const response = await fetch(`${API_URL}/api/child/last-location`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+          'Content-Type': 'application/json',
+        },
+      });
 
-      // Disconnect previous instance if it exists but isn't connected properly
-      if (backgroundSocket) {
-        backgroundSocket.disconnect();
+      if (!response.ok) {
+        // Handle non-2xx responses (e.g., 404 Not Found, 401 Unauthorized, 500 Server Error)
+        const errorText = await response.text();
+        console.error(`[${BACKGROUND_SOCKET_TASK}] Failed to fetch location. Status: ${response.status}, Body: ${errorText}`);
+        // Decide if this is a permanent failure (e.g., 401 might mean token is bad -> clear?)
+        // For now, just report failure for this run
+        return BackgroundFetch.BackgroundFetchResult.Failed;
       }
 
-      backgroundSocket = io(SOCKET_URL, {
-        auth: { token: authToken },
-        reconnectionAttempts: 3, // Limit background attempts
-        timeout: 5000, // Shorter timeout for background
-      });
+      const locationData = await response.json();
 
-      backgroundSocket.on('connect', () => {
-        console.log('[Background Task] Socket connected successfully:', backgroundSocket?.id);
-        // Potentially unregister task if connection is stable? Or rely on interval.
-      });
-
-      backgroundSocket.on('connect_error', (error) => {
-        console.error('[Background Task] Socket connection error:', error.message);
-        // Don't clear token here, let the next run handle expiration/validity
-        backgroundSocket?.disconnect(); // Ensure cleanup
-        backgroundSocket = null;
-      });
-
-      backgroundSocket.on('disconnect', (reason) => {
-        console.log('[Background Task] Socket disconnected:', reason);
-        backgroundSocket = null; // Clear reference on disconnect
-      });
-
-      // Give it a moment to connect - TaskManager might kill the process quickly
-      // A more robust solution might involve keeping the task alive longer if needed,
-      // but that's more complex (e.g., foreground service on Android).
-      await new Promise(resolve => setTimeout(resolve, 3000)); // Wait 3 seconds
-
-      if (backgroundSocket?.connected) {
-         console.log('[Background Task] Socket seems connected after wait.');
-         return BackgroundFetch.BackgroundFetchResult.NewData; // Indicate success
+      if (locationData && locationData.latitude && locationData.longitude) {
+        console.log(`[${BACKGROUND_SOCKET_TASK}] Successfully fetched location:`, locationData);
+        // Store the fetched location data
+        await AsyncStorage.setItem(LAST_LOCATION_STORAGE_KEY, JSON.stringify(locationData));
+        return BackgroundFetch.BackgroundFetchResult.NewData; // Indicate new data was fetched
       } else {
-         console.log('[Background Task] Socket did not connect within wait time.');
-         backgroundSocket?.disconnect(); // Clean up attempt
-         backgroundSocket = null;
-         return BackgroundFetch.BackgroundFetchResult.Failed;
+        console.log(`[${BACKGROUND_SOCKET_TASK}] Fetched data is missing location details.`);
+        // Maybe the child hasn't sent location yet? Treat as NoData for this run.
+        return BackgroundFetch.BackgroundFetchResult.NoData;
       }
 
-    } else {
-      console.log('[Background Task] Socket already connected.');
-      // Optionally add a ping event here to verify connection health
-      return BackgroundFetch.BackgroundFetchResult.NoData; // No change needed
+    } catch (fetchError) {
+      console.error(`[${BACKGROUND_SOCKET_TASK}] Error fetching child location:`, fetchError);
+      return BackgroundFetch.BackgroundFetchResult.Failed; // Network error or other issue
     }
 
   } catch (error) {
-    console.error('[Background Task] Error during task execution:', error);
+    console.error(`[${BACKGROUND_SOCKET_TASK}] General error during task execution:`, error);
     return BackgroundFetch.BackgroundFetchResult.Failed;
   }
 });
 
-// Helper function to register the task (call this from your app)
-export async function registerBackgroundSocketTask() {
+// Helper function to register the task (call this from your app for the PARENT)
+export async function registerBackgroundSocketTask() { // Keep name consistent with login.tsx call
   try {
+    // Unregister previous task definition if name changed, just in case
+    // await BackgroundFetch.unregisterTaskAsync('BACKGROUND_SOCKET_TASK');
+
     await BackgroundFetch.registerTaskAsync(BACKGROUND_SOCKET_TASK, {
-      minimumInterval: 15 * 60, // Run every 15 minutes (minimum allowed)
-      stopOnTerminate: false, // Keep running even if app is terminated (iOS only)
-      startOnBoot: true, // Restart task on device boot (Android only)
+      minimumInterval: 15 * 60, // Run approx every 15 minutes (OS decides exact timing)
+      stopOnTerminate: false, // Keep task registered after app termination (iOS specific)
+      startOnBoot: true, // Register task on device boot (Android specific)
     });
-    console.log('Background socket task registered successfully.');
+    console.log(`Background fetch task '${BACKGROUND_SOCKET_TASK}' registered successfully.`);
   } catch (error) {
-    console.error('Failed to register background socket task:', error);
+    console.error(`Failed to register background fetch task '${BACKGROUND_SOCKET_TASK}':`, error);
   }
 }
 
-// Helper function to unregister the task (e.g., on logout)
-export async function unregisterBackgroundSocketTask() {
+// Helper function to unregister the task (e.g., on logout for the PARENT)
+export async function unregisterBackgroundSocketTask() { // Keep name consistent
     try {
-        await BackgroundFetch.unregisterTaskAsync(BACKGROUND_SOCKET_TASK);
-        console.log('Background socket task unregistered successfully.');
-        if (backgroundSocket?.connected) {
-            backgroundSocket.disconnect();
-            backgroundSocket = null;
+        const isRegistered = await TaskManager.isTaskRegisteredAsync(BACKGROUND_SOCKET_TASK);
+        if (isRegistered) {
+            await BackgroundFetch.unregisterTaskAsync(BACKGROUND_SOCKET_TASK);
+            console.log(`Background fetch task '${BACKGROUND_SOCKET_TASK}' unregistered successfully.`);
+            // Clear last fetched location on logout
+            await AsyncStorage.removeItem(LAST_LOCATION_STORAGE_KEY);
+        } else {
+             console.log(`Background fetch task '${BACKGROUND_SOCKET_TASK}' was not registered.`);
         }
     } catch (error) {
-        console.error('Failed to unregister background socket task:', error);
+        console.error(`Failed to unregister background fetch task '${BACKGROUND_SOCKET_TASK}':`, error);
     }
 }
