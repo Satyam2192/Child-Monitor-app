@@ -5,6 +5,7 @@ const { Server } = require("socket.io");
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const mongoose = require('mongoose'); // Import mongoose
+const { Expo } = require('expo-server-sdk'); // Import Expo SDK
 
 const app = express();
 app.use(express.json()); // Middleware to parse JSON bodies
@@ -44,7 +45,9 @@ const userSchema = new mongoose.Schema({
     email: { type: String, required: true, unique: true, trim: true, lowercase: true }, // Add email field
     username: { type: String, required: true, unique: true, trim: true, lowercase: true },
     password: { type: String, required: true },
-    role: { type: String, required: true, enum: ['parent', 'child'] }
+    role: { type: String, required: true, enum: ['parent', 'child'] },
+    pushTokens: { type: [String], default: [] }, // Stores Expo push tokens for this user
+    linkedUserIds: { type: [Number], default: [] } // Stores the numeric 'id' of linked users (e.g., parent's children or child's parents)
 }, { timestamps: true }); // Add timestamps for createdAt/updatedAt
 
 const User = mongoose.model('User', userSchema);
@@ -98,6 +101,7 @@ app.post('/register', async (req, res) => {
             username: username.toLowerCase(),
             password: hashedPassword,
             role
+            // linkedUserIds and pushTokens default to empty arrays
         });
         await newUser.save();
         console.log('User registered:', newUser.email, newUser.username, newUser.role, `(ID: ${newUser.id})`);
@@ -107,6 +111,23 @@ app.post('/register', async (req, res) => {
         res.status(500).json({ message: 'Error registering user' });
     }
 });
+
+// --- JWT Middleware for HTTP Routes ---
+const authenticateToken = (req, res, next) => {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+
+    if (token == null) return res.sendStatus(401); // if there isn't any token
+
+    jwt.verify(token, JWT_SECRET, (err, user) => {
+        if (err) {
+            console.error("HTTP Auth Error:", err.message);
+            return res.sendStatus(403); // Invalid token
+        }
+        req.user = user; // Add decoded user payload to request object
+        next(); // pass the execution off to whatever request the client intended
+    });
+};
 
 // Login Endpoint
 app.post('/login', async (req, res) => {
@@ -123,7 +144,9 @@ app.post('/login', async (req, res) => {
         if (!isMatch) {
             return res.status(401).json({ message: 'Invalid credentials' });
         }
-        const token = jwt.sign({ userId: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '1h' });
+        // Include linkedUserIds in the token if needed by the client
+        const tokenPayload = { userId: user.id, username: user.username, role: user.role, linkedUserIds: user.linkedUserIds };
+        const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '1h' });
         console.log('User logged in:', user.username);
         res.json({ token });
     } catch (error) {
@@ -131,6 +154,80 @@ app.post('/login', async (req, res) => {
         res.status(500).json({ message: 'Error logging in' });
     }
 });
+
+
+// --- API Routes ---
+
+// Push Token Registration
+app.post('/api/user/push-token', authenticateToken, async (req, res) => {
+    const { pushToken } = req.body;
+    const userId = req.user.userId; // Get userId from authenticated user payload
+
+    if (!pushToken) {
+        return res.status(400).json({ message: 'Push token is required' });
+    }
+    if (!Expo.isExpoPushToken(pushToken)) {
+         console.warn(`Received invalid push token format from user ${userId}: ${pushToken}`);
+         return res.status(400).json({ message: 'Invalid push token format' });
+    }
+
+    try {
+        const updatedUser = await User.findOneAndUpdate(
+            { id: userId },
+            { $addToSet: { pushTokens: pushToken } }, // Add token if not present
+            { new: true }
+        );
+        if (!updatedUser) return res.status(404).json({ message: 'User not found' });
+        console.log(`Added/updated push token for user ${userId}: ${pushToken}`);
+        res.status(200).json({ message: 'Push token registered successfully' });
+    } catch (error) {
+        console.error(`Error registering push token for user ${userId}:`, error);
+        res.status(500).json({ message: 'Failed to register push token' });
+    }
+});
+
+// Placeholder Linking Endpoint (Needs proper implementation)
+app.post('/api/link-user', authenticateToken, async (req, res) => {
+    const { targetUserId } = req.body; // ID of the user to link with
+    const currentUserId = req.user.userId;
+    const currentUserRole = req.user.role;
+
+    if (!targetUserId || typeof targetUserId !== 'number') {
+        return res.status(400).json({ message: 'Target user ID is required and must be a number.' });
+    }
+    if (targetUserId === currentUserId) {
+        return res.status(400).json({ message: 'Cannot link user to themselves.' });
+    }
+
+    try {
+        const currentUser = await User.findOne({ id: currentUserId });
+        const targetUser = await User.findOne({ id: targetUserId });
+
+        if (!currentUser || !targetUser) {
+            return res.status(404).json({ message: 'One or both users not found.' });
+        }
+
+        // Basic role check (e.g., parent links to child, child links to parent)
+        if (currentUserRole === targetUser.role) {
+             return res.status(400).json({ message: `Cannot link users with the same role (${currentUserRole}).` });
+        }
+
+        // Add links mutually (using $addToSet to prevent duplicates)
+        await User.updateOne({ id: currentUserId }, { $addToSet: { linkedUserIds: targetUserId } });
+        await User.updateOne({ id: targetUserId }, { $addToSet: { linkedUserIds: currentUserId } });
+
+        console.log(`User ${currentUserId} linked with user ${targetUserId}`);
+        res.status(200).json({ message: `Successfully linked with user ${targetUserId}` });
+
+    } catch (error) {
+        console.error(`Error linking users ${currentUserId} and ${targetUserId}:`, error);
+        res.status(500).json({ message: 'Failed to link users.' });
+    }
+});
+
+
+// --- Expo Push Notifications Setup ---
+const expo = new Expo(); // Create a new Expo SDK client
 
 
 // --- Socket.IO Setup ---
@@ -153,8 +250,7 @@ io.use((socket, next) => {
       console.error("Socket Auth Error:", err.message);
       return next(new Error('Authentication error: Invalid token'));
     }
-    socket.user = decoded; // Attach user info { userId, username, role }
-    console.log(`Socket authenticated: ${socket.user.username} (${socket.user.role})`);
+    socket.user = decoded; // Attach user info { userId, username, role, linkedUserIds }
     next();
   });
 });
@@ -178,45 +274,126 @@ const getChildrenList = () => {
     return children;
 };
 
-// Helper function to broadcast updates to all parents
-const broadcastToParents = (event, data) => {
-    console.log(`Broadcasting ${event} to ${connectedParents.size} parents`);
+// Helper function to broadcast updates to specific parents (Sockets)
+const broadcastToSpecificParentsSockets = (parentIds, event, data) => {
+    if (!parentIds || parentIds.length === 0) return;
+    // console.log(`Broadcasting ${event} to specific parents (${parentIds.join(',')}) via Sockets`);
     connectedParents.forEach((userInfo, socketId) => {
-        io.to(socketId).emit(event, data);
+        if (parentIds.includes(userInfo.userId)) { // Check if this parent should receive it
+             io.to(socketId).emit(event, data);
+        }
     });
+};
+
+// --- Push Notification Sending Logic ---
+const sendPushNotifications = async (pushTokens, title, body, data) => {
+    const messages = [];
+    const tokensToRemove = new Set(); // Keep track of tokens to remove
+
+    for (let pushToken of pushTokens) {
+        if (!Expo.isExpoPushToken(pushToken)) {
+            console.warn(`Push token ${pushToken} is not a valid Expo push token`);
+            tokensToRemove.add(pushToken); // Mark invalid format tokens for removal
+            continue;
+        }
+        messages.push({
+            to: pushToken,
+            sound: 'default',
+            title: title,
+            body: body,
+            data: data,
+        });
+    }
+
+    if (messages.length === 0) {
+        console.log("No valid push tokens found to send notifications.");
+        // Still attempt cleanup for invalid format tokens found above
+        if (tokensToRemove.size > 0) {
+             await cleanupInvalidTokens([...tokensToRemove]);
+        }
+        return;
+    }
+
+    const chunks = expo.chunkPushNotifications(messages);
+    console.log(`Sending ${messages.length} push notifications in ${chunks.length} chunks.`);
+
+    for (const chunk of chunks) {
+        try {
+            const ticketChunk = await expo.sendPushNotificationsAsync(chunk);
+            ticketChunk.forEach((ticket, index) => {
+                const originalMessage = chunk[index];
+                if (ticket.status === 'error') {
+                    console.error(`Error sending notification to ${originalMessage.to}: ${ticket.message}`);
+                    if (ticket.details && ticket.details.error === 'DeviceNotRegistered') {
+                        tokensToRemove.add(originalMessage.to); // Mark for removal
+                    }
+                    // Handle other potential errors like 'MessageTooBig', 'InvalidCredentials', etc.
+                }
+            });
+        } catch (error) {
+            console.error('Error sending push notification chunk:', error);
+            // Potentially mark all tokens in this chunk as problematic? Depends on error type.
+        }
+    }
+
+    // Cleanup invalid tokens after attempting all sends
+    if (tokensToRemove.size > 0) {
+        await cleanupInvalidTokens([...tokensToRemove]);
+    }
+};
+
+// Helper function to remove invalid tokens from DB
+const cleanupInvalidTokens = async (tokens) => {
+     if (!tokens || tokens.length === 0) return;
+     console.log(`Attempting to remove ${tokens.length} invalid/unregistered push tokens from DB...`);
+     try {
+         const result = await User.updateMany(
+             { pushTokens: { $in: tokens } }, // Find users with any of these tokens
+             { $pull: { pushTokens: { $in: tokens } } } // Remove the specific tokens
+         );
+         console.log(`Token cleanup result: ${result.modifiedCount} users updated.`);
+     } catch (error) {
+         console.error("Error during push token cleanup:", error);
+     }
 };
 
 
 io.on('connection', (socket) => {
-  const { userId, role, username } = socket.user;
-  console.log(`User connected: ${username} (ID: ${socket.id}, Role: ${role})`);
+  const { userId, role, username, linkedUserIds } = socket.user; // Get linked IDs from token
+  console.log(`User connected: ${username} (ID: ${socket.id}, Role: ${role}, Linked: ${linkedUserIds?.join(',')})`);
 
   // --- Track connected users ---
   if (role === 'parent') {
       connectedParents.set(socket.id, socket.user);
-      // Send current children list to the newly connected parent
+      // TODO: Send only *linked* children list? Requires fetching linked children details.
+      // For now, send all connected children.
       socket.emit('update_children_list', getChildrenList());
       console.log(`Parent ${username} connected. Total parents: ${connectedParents.size}`);
   } else if (role === 'child') {
       connectedChildren.set(userId, { socketId: socket.id, username: username });
-      // Notify all parents about the new child
-      broadcastToParents('update_children_list', getChildrenList());
+      // Notify only linked parents about this child connecting
+      if (linkedUserIds && linkedUserIds.length > 0) {
+          broadcastToSpecificParentsSockets(linkedUserIds, 'update_children_list', getChildrenList());
+      }
       console.log(`Child ${username} (ID: ${userId}) connected. Total children: ${connectedChildren.size}`);
-      // Child automatically joins their own room for specific targeting
       const childRoomName = `child_${userId}`;
       socket.join(childRoomName);
       console.log(`Child ${username} joined room: ${childRoomName}`);
   }
 
-  // --- Specific Room Joining (for specific monitoring) ---
+  // --- Specific Room Joining ---
   socket.on('join_child_room', (targetChildUserId) => {
     if (role === 'parent') {
+      // Optional: Check if targetChildUserId is in parent's linkedUserIds
+      if (linkedUserIds && !linkedUserIds.includes(targetChildUserId)) {
+          console.log(`Parent ${username} attempted to join room for unlinked child ${targetChildUserId}`);
+          return socket.emit('join_room_error', { message: `You are not linked to child ID ${targetChildUserId}.` });
+      }
       const targetRoom = `child_${targetChildUserId}`;
-      // Check if child user exists in DB (or just if they are connected)
       if (connectedChildren.has(targetChildUserId)) {
             console.log(`Parent ${username} (ID: ${userId}) joining specific room: ${targetRoom}`);
             socket.join(targetRoom);
-            socket.emit('joined_room_ack', { room: targetRoom, childId: targetChildUserId }); // Acknowledge specific join
+            socket.emit('joined_room_ack', { room: targetRoom, childId: targetChildUserId });
       } else {
          console.log(`Parent ${username} attempted to join non-existent/offline child room for ID: ${targetChildUserId}`);
          socket.emit('join_room_error', { message: `Child with ID ${targetChildUserId} not found or is offline.` });
@@ -234,30 +411,78 @@ io.on('connection', (socket) => {
         console.log(`Parent ${username} disconnected. Total parents: ${connectedParents.size}`);
     } else if (role === 'child') {
         connectedChildren.delete(userId);
-        // Notify all parents that a child disconnected
-        broadcastToParents('update_children_list', getChildrenList());
+        // Notify only linked parents that this child disconnected
+        if (linkedUserIds && linkedUserIds.length > 0) {
+             broadcastToSpecificParentsSockets(linkedUserIds, 'update_children_list', getChildrenList());
+        }
         console.log(`Child ${username} (ID: ${userId}) disconnected. Total children: ${connectedChildren.size}`);
     }
   });
 
   // --- Location Data Handler ---
-  socket.on('send_location', (data) => {
+  socket.on('send_location', async (data) => { // Make async
     if (role === 'child') {
-      // console.log(`Location received from ${username}:`, data);
-      // Broadcast location to ALL connected parents
-      broadcastToParents('receive_location', { userId, username, ...data });
+      const locationData = { userId, username, ...data };
+      // console.log(`Location received from ${username}:`, data.latitude, data.longitude);
+
+      // Find linked parents for this child
+      const childUser = await User.findOne({ id: userId }).select('linkedUserIds').lean();
+      const parentIds = childUser?.linkedUserIds || [];
+
+      if (parentIds.length === 0) {
+          console.log(`Child ${username} sent location, but has no linked parents.`);
+          return; // No parents to notify
+      }
+
+      // 1. Broadcast location to linked connected parents via Socket.IO
+      broadcastToSpecificParentsSockets(parentIds, 'receive_location', locationData);
+
+      // 2. Send Push Notifications to linked parents (whether connected or not)
+      try {
+          const parents = await User.find({ id: { $in: parentIds }, role: 'parent', pushTokens: { $exists: true, $ne: [] } })
+                                    .select('pushTokens').lean();
+
+          let parentTokens = parents.reduce((tokens, parent) => tokens.concat(parent.pushTokens), []);
+
+          if (parentTokens.length > 0) {
+              console.log(`Sending push notification for ${username}'s location to ${parentTokens.length} tokens of linked parents.`);
+              await sendPushNotifications(
+                  parentTokens,
+                  `Location Update: ${username}`, // Notification Title
+                  `Received new location at ${new Date(data.timestamp).toLocaleTimeString()}`, // Notification Body
+                  { // Optional data payload
+                      type: 'locationUpdate',
+                      childUserId: userId,
+                      childUsername: username,
+                      latitude: data.latitude,
+                      longitude: data.longitude,
+                      timestamp: data.timestamp,
+                      screen: 'parent' // Hint for client-side navigation
+                  }
+              );
+          } else {
+              console.log(`No valid push tokens found for linked parents of child ${userId}.`);
+          }
+      } catch (error) {
+          console.error(`Error fetching linked parent tokens or sending push notifications for child ${userId}:`, error);
+      }
     }
   });
 
    // --- Location Refresh Handler ---
    socket.on('request_current_location', (targetChildUserId) => {
        if (role === 'parent') {
+           // Optional: Check if targetChildUserId is in parent's linkedUserIds
+           if (linkedUserIds && !linkedUserIds.includes(targetChildUserId)) {
+               console.log(`Parent ${username} attempted to request location for unlinked child ${targetChildUserId}`);
+               return socket.emit('location_request_error', { message: `You are not linked to child ID ${targetChildUserId}.` });
+           }
+
            const childInfo = connectedChildren.get(targetChildUserId);
            if (childInfo) {
                const targetSocketId = childInfo.socketId;
-               const targetRoom = `child_${targetChildUserId}`; // Also emit to room in case parent joined specifically
+               const targetRoom = `child_${targetChildUserId}`;
                console.log(`Parent ${username} requested current location for child ${targetChildUserId}. Emitting to socket ${targetSocketId} and room ${targetRoom}`);
-               // Emit command directly to the specific child's socket AND their room
                io.to(targetSocketId).to(targetRoom).emit('get_current_location');
            } else {
                 console.log(`Parent ${username} requested location for offline/unknown child ${targetChildUserId}`);
