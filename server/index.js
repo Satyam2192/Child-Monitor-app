@@ -402,7 +402,7 @@ io.on('connection', (socket) => {
           console.log(`Child ${username} (ID: ${userId}) primary connection established. Socket ID: ${socket.id}. Total children: ${connectedChildren.size}`);
       } else {
           // Log if a different socket connects for the same child (likely background task)
-          console.log(`Child ${username} (ID: ${userId}) already tracked with socket ${connectedChildren.get(userId).socketId}. New socket ID ${socket.id} likely from background task.`);
+          console.log(`Child ${username} (ID: ${userId}) already tracked with socket ${connectedChildren.get(userId)?.socketId}. New socket ID ${socket.id} likely from background task.`);
       }
       // Parent gets the full list on their connection. Status can be inferred later.
       const childRoomName = `child_${userId}`;
@@ -465,8 +465,8 @@ io.on('connection', (socket) => {
   });
 
   // --- Disconnect Handler ---
-  socket.on('disconnect', () => {
-    console.log(`User disconnected: ${username} (ID: ${socket.id}, Role: ${role})`);
+  socket.on('disconnect', (reason) => { // Add reason parameter
+    console.log(`User disconnected: ${username} (ID: ${socket.id}, Role: ${role}, Reason: ${reason})`); // Log reason
     if (role === 'parent') {
         connectedParents.delete(socket.id);
         console.log(`Parent ${username} disconnected. Total parents: ${connectedParents.size}`);
