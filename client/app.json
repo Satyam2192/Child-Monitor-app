@@ -13,9 +13,12 @@
       "infoPlist": {
         "UIBackgroundModes": [
           "fetch",
+          "processing",
+          "fetch",
           "processing"
         ]
-      }
+      },
+      "bundleIdentifier": "com.anonymous.FlashGet"
     },
     "android": {
       "adaptiveIcon": {
@@ -24,7 +27,17 @@
       },
       "usesCleartextTraffic": true,
       "package": "com.anonymous.FlashGet",
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyCDdSXNJt6n5SirV8GNFVlKFKSZha5TeO0"
+        }
+      },
       "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION",
         "RECEIVE_BOOT_COMPLETED"
       ]
     },
@@ -44,10 +57,29 @@
           "backgroundColor": "#ffffff"
         }
       ],
-      "expo-task-manager"
+      "expo-task-manager",
+      "./withAndroidBackgroundLocation.js",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "manifestApplicationAttributes": {
+              "com.google.android.geo.API_KEY": "AIzaSyCDdSXNJt6n5SirV8GNFVlKFKSZha5TeO0"
+            }
+          }
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "router": {
+        "origin": false
+      },
+      "eas": {
+        "projectId": "bdd41415-3a93-43c8-bc41-bc63689b45e6"
+      }
     }
   }
 }

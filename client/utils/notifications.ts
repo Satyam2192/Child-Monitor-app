@@ -3,7 +3,7 @@ import * as Device from 'expo-device';
 import { Platform, Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const API_URL = 'http://192.168.1.13:7000'; // Ensure this matches
+const API_URL = 'https://flashgo.onrender.com'; // Ensure this matches
 const PUSH_ENDPOINT = `${API_URL}/api/user/push-token`; // **Backend endpoint needed**
 
 // --- Android Channel Setup ---

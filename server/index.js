@@ -266,7 +266,9 @@ app.get('/', (req, res) => {
 const connectedParents = new Map(); // Map<socket.id, user info>
 const connectedChildren = new Map(); // Map<userId, { socketId: string, username: string }>
 const pendingConnections = new Map(); // Map<connectionCode, { userId: number, socketId: string, expires: number }>
+const childLastLocations = new Map(); // Map<userId, { latitude: number, longitude: number, timestamp: number, username: string }>
 const CONNECTION_CODE_EXPIRY_MS = 5 * 60 * 1000; // 5 minutes
+const LOCATION_RECENCY_THRESHOLD_MS = 15 * 60 * 1000; // 15 minutes for considering stored location "recent"
 
 // Helper function to generate a unique connection code
 const generateConnectionCode = (length = 6) => {
@@ -660,11 +662,23 @@ io.on('connection', (socket) => {
       }
   });
 
-  // --- Location Data Handler ---
+  // --- Location Data Handler (Update to store last location) ---
   socket.on('send_location', async (data) => { // Make async
     if (role === 'child') {
-      const locationData = { userId, username, ...data };
-      // console.log(`Location received from ${username}:`, data.latitude, data.longitude);
+      const locationData = {
+          userId,
+          username,
+          latitude: data.latitude,
+          longitude: data.longitude,
+          timestamp: data.timestamp || Date.now() // Ensure timestamp exists
+      };
+      // console.log(`Location received from ${username}:`, locationData.latitude, locationData.longitude);
+
+      // Store the latest location
+      childLastLocations.set(userId, locationData);
+      // Optional: Log storage update
+      // console.log(`Stored last location for child ${userId} at ${new Date(locationData.timestamp).toISOString()}`);
+
 
       // Find linked parents for this child
       const childUser = await User.findOne({ id: userId }).select('linkedUserIds').lean();
@@ -710,28 +724,85 @@ io.on('connection', (socket) => {
     }
   });
 
-   // --- Location Refresh Handler ---
-   socket.on('request_current_location', (targetChildUserId) => {
-       if (role === 'parent') {
-           // Optional: Check if targetChildUserId is in parent's linkedUserIds
-           if (linkedUserIds && !linkedUserIds.includes(targetChildUserId)) {
-               console.log(`Parent ${username} attempted to request location for unlinked child ${targetChildUserId}`);
-               return socket.emit('location_request_error', { message: `You are not linked to child ID ${targetChildUserId}.` });
-           }
-
-           const childInfo = connectedChildren.get(targetChildUserId);
-           if (childInfo) {
-               const targetSocketId = childInfo.socketId;
-               const targetRoom = `child_${targetChildUserId}`;
-               console.log(`Parent ${username} requested current location for child ${targetChildUserId}. Emitting to socket ${targetSocketId} and room ${targetRoom}`);
-               io.to(targetSocketId).to(targetRoom).emit('get_current_location');
-           } else {
-                console.log(`Parent ${username} requested location for offline/unknown child ${targetChildUserId}`);
-                socket.emit('location_request_error', { message: `Child ${targetChildUserId} is not connected.` });
-           }
-       } else {
-           console.log(`Non-parent user ${username} attempted to request location.`);
+   // --- Location Refresh Handler (Push Notification Trigger Logic) ---
+   socket.on('request_current_location', async (targetChildUserId) => {
+       console.log(`[DEBUG] request_current_location received for child ${targetChildUserId} from parent ${username}`); // Add entry log
+       if (role !== 'parent') {
+           console.log(`[DEBUG] Ignored request: User ${username} is not a parent.`);
+           return; // Ignore if not parent
        }
+
+       // Check if parent is linked to the child
+       console.log(`[DEBUG] Checking link for parent ${userId} and child ${targetChildUserId}. Parent linked IDs: ${socket.user.linkedUserIds?.join(',')}`);
+       if (socket.user.linkedUserIds && !socket.user.linkedUserIds.includes(targetChildUserId)) {
+           console.log(`[DEBUG] Parent ${username} is not linked to child ${targetChildUserId}. Aborting.`);
+           return socket.emit('location_request_error', { message: `You are not linked to child ID ${targetChildUserId}.` });
+       }
+
+       const childInfo = connectedChildren.get(targetChildUserId);
+       const storedLocation = childLastLocations.get(targetChildUserId);
+       console.log(`[DEBUG] Child connection status (childInfo): ${childInfo ? JSON.stringify(childInfo) : 'null'}`);
+       console.log(`[DEBUG] Stored location status (storedLocation): ${storedLocation ? JSON.stringify(storedLocation) : 'null'}`);
+
+       // --- Scenario 1: Child's main app is connected ---
+       if (childInfo) {
+           console.log(`[DEBUG] Scenario 1: Child ${targetChildUserId} is connected.`);
+           const targetSocketId = childInfo.socketId;
+           const targetRoom = `child_${targetChildUserId}`;
+           console.log(`Parent ${username} requested location for connected child ${targetChildUserId}. Emitting 'get_current_location' to socket ${targetSocketId}.`);
+           // Ask the connected child for a live update
+           io.to(targetSocketId).to(targetRoom).emit('get_current_location');
+           // Optionally send stored location immediately as well for faster feedback?
+           // if (storedLocation) {
+           //     socket.emit('receive_location', { ...storedLocation, isStale: true, updateRequested: true });
+           // }
+           return; // Exit after handling connected child
+       }
+
+       // --- Scenario 2: Child's main app is NOT connected (App Closed/Background) ---
+       console.log(`[DEBUG] Scenario 2: Child ${targetChildUserId} is NOT connected. Attempting push trigger.`);
+
+       // Immediately send back the latest stored location, even if stale, for quick feedback
+       if (storedLocation) {
+           console.log(`[DEBUG] Sending stored location (timestamp: ${new Date(storedLocation.timestamp).toISOString()}) to parent ${username} while requesting fresh update via push.`);
+           socket.emit('receive_location', { ...storedLocation, isStale: true, updateRequested: true });
+       } else {
+           // If no stored location exists at all, inform the parent
+           console.log(`[DEBUG] No stored location found for offline child ${targetChildUserId}. Informing parent.`);
+           socket.emit('location_request_error', { message: `Child ${targetChildUserId} is offline. Requesting update via push...` });
+       }
+
+       // Attempt to send silent push notification to trigger background fetch
+       console.log(`[DEBUG] Preparing to send push notification trigger for child ${targetChildUserId}.`);
+       try {
+           const childUser = await User.findOne({ id: targetChildUserId }).select('pushTokens').lean();
+           const childTokens = childUser?.pushTokens || [];
+
+           if (childTokens.length > 0) {
+               console.log(`Sending silent push notification to trigger location update for child ${targetChildUserId} (${childTokens.length} tokens).`);
+               await sendPushNotifications(
+                   childTokens,
+                   null, // No title for silent notification
+                   null, // No body for silent notification
+                   { // Data payload to be handled by client background handler
+                       action: 'requestImmediateLocation',
+                       requestingParentId: userId // Optional: Include who requested it
+                   },
+                   // Add options for silent notification if the function supports it
+                   // e.g., { contentAvailable: true, priority: 'high' } - check expo-server-sdk docs/implementation
+               );
+               // Note: We don't wait for a response here. The response will come via 'send_location' if the client handles the push.
+           } else {
+               console.log(`Child ${targetChildUserId} has no registered push tokens. Cannot trigger update.`);
+               // Update the parent? Maybe not necessary if stale data was already sent.
+               // socket.emit('location_request_error', { message: `Child ${targetChildUserId} has no push tokens registered. Cannot request live update.` });
+           }
+       } catch (error) {
+           console.error(`Error fetching tokens or sending push notification trigger for child ${targetChildUserId}:`, error);
+           // Inform parent about the failure to trigger?
+           // socket.emit('location_request_error', { message: `Failed to send push notification trigger to child ${targetChildUserId}.` });
+       }
+       // Removed extra brace here
    });
 
 });

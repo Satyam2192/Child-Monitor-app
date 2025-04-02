@@ -145,27 +145,22 @@ export default function ParentScreen() {
       // Listener for children list updates
       const handleUpdateChildrenList = (children: ChildInfo[]) => {
           console.log('Received updated children list:', children);
+          // Update the list of currently connected children
           setAllChildren(children);
-          // Optional: Remove locations for children who disconnected?
-          setAllChildLocations(prevLocations => {
-              const newLocations: Record<number, LocationData> = {};
-              children.forEach(child => {
-                  if (prevLocations[child.id]) {
-                      newLocations[child.id] = prevLocations[child.id];
-                  }
-              });
-              return newLocations;
-          });
+          // --- DO NOT REMOVE locations for disconnected children ---
+          // The allChildLocations state will retain the last known location
+          // for any child, connected or not. The map rendering logic will
+          // use this state to display markers.
       };
 
-      // Listener for location updates (updates map region only if monitoring)
+      // Listener for location updates (updates map region based on monitoring state)
       const handleReceiveLocation = (data: LocationData) => {
           // console.log('Location received:', data);
-          setAllChildLocations(prev => ({
-              ...prev,
-              [data.userId]: data // Update location for the specific child ID
-          }));
-          // RESTORED: If specifically monitoring this child, update map region
+          // Update the location state first
+          const updatedLocations = { ...allChildLocations, [data.userId]: data };
+          setAllChildLocations(updatedLocations);
+
+          // If specifically monitoring this child, update map region and animate
           if (data.userId === monitoringChildId) {
               const newRegion = {
                   latitude: data.latitude,
@@ -173,8 +168,29 @@ export default function ParentScreen() {
                   latitudeDelta: 0.01, // Adjust zoom level as needed
                   longitudeDelta: 0.01,
               };
-              setMapRegion(newRegion);
+              setMapRegion(newRegion); // Update state for consistency
               mapRef.current?.animateToRegion(newRegion, 500); // Animate map to new location
+          }
+          // If showing all children, fit map to all known locations
+          else if (monitoringChildId === null) {
+              const coordinates = Object.values(updatedLocations).map(loc => ({
+                  latitude: loc.latitude,
+                  longitude: loc.longitude,
+              }));
+
+              if (coordinates.length > 0 && mapRef.current) {
+                  // Add parent's current location if available? (Optional)
+                  // mapRef.current.fitToElements(true); // Alternative: fits to markers + user location dot
+
+                  mapRef.current.fitToCoordinates(coordinates, {
+                      edgePadding: { top: 50, right: 50, bottom: 50, left: 50 }, // Add padding
+                      animated: true,
+                  });
+                  // We don't strictly need to setMapRegion here as fitToCoordinates handles the view,
+                  // but setting it might be useful if other logic depends on the region state.
+                  // However, calculating the exact region bounds manually is complex.
+                  // setMapRegion(calculatedRegion); // Omitted for simplicity
+              }
           }
           setIsRefreshing(false); // Stop refresh indicator if it was active
       };
@@ -393,8 +409,17 @@ export default function ParentScreen() {
                      <Text className="text-base font-semibold text-blue-800">Specifically Monitoring:</Text>
                      <Text className="text-lg font-bold text-blue-900">{allChildren.find(c=>c.id === monitoringChildId)?.username ?? `Child ID ${monitoringChildId}`}</Text>
                      {joinedRoom ? <Text className="text-green-600">(In Room)</Text> : <Text className="text-orange-500">(Joining Room...)</Text>}
+                     {/* Add check if child is actually connected */}
+                     {!allChildren.some(c => c.id === monitoringChildId) && monitoringChildId && (
+                        <Text className="text-red-500 text-sm">(Child Offline - Showing Last Location)</Text>
+                     )}
                      <View className="mt-2 flex-row justify-around items-center">
-                        <Button title="Refresh Location" onPress={handleRefreshLocation} disabled={!joinedRoom || isLoading || isRefreshing} />
+                        {/* Disable refresh if child is not in the connected list */}
+                        <Button
+                            title="Refresh Location"
+                            onPress={handleRefreshLocation}
+                            disabled={!joinedRoom || isLoading || isRefreshing || !allChildren.some(c => c.id === monitoringChildId)}
+                        />
                         <Button title="Show All" onPress={handleShowAllChildren} />
                      </View>
                      {(isLoading || isRefreshing) && <ActivityIndicator size="small" color="#0000ff" className="mt-1"/>}

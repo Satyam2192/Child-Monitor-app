@@ -4,7 +4,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { jwtDecode, JwtPayload } from 'jwt-decode';
 
 export const BACKGROUND_SOCKET_TASK = 'BACKGROUND_FETCH_LOCATION_TASK'; // Renamed for clarity
-const API_URL = 'http://192.168.1.13:7000'; // Ensure this matches your API URL
+const API_URL = 'https://flashgo.onrender.com'; // Ensure this matches your API URL
 const LAST_LOCATION_STORAGE_KEY = 'lastFetchedChildLocation';
 
 // Define the expected structure of the decoded JWT payload for role check

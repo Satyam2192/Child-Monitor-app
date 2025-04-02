@@ -4,7 +4,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { jwtDecode, JwtPayload } from 'jwt-decode'; // Import jwt-decode
 
 // Define your backend URL
-const SOCKET_URL = 'http://192.168.1.13:7000'; // Updated server URL
+const SOCKET_URL = 'https://flashgo.onrender.com'; // Updated server URL
 
 interface SocketContextType {
   socket: Socket | null;

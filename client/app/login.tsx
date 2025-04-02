@@ -15,7 +15,7 @@ interface DecodedToken {
   exp: number;
 }
 
-const API_URL = 'http://192.168.1.13:7000'; // Updated server URL
+const API_URL = 'https://flashgo.onrender.com'; // Updated server URL
 
 export default function LoginScreen() {
   const [username, setUsername] = useState('');

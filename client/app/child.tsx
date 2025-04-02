@@ -79,7 +79,7 @@ export default function ChildScreen() {
                   // Start background location updates
                   await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
                       accuracy: Location.Accuracy.Balanced, // Balanced accuracy for background
-                      timeInterval: 5 * 60 * 1000, // Approx every 5 minutes (adjust as needed)
+                      timeInterval: 1 * 60 * 1000, // Approx every 1 minute (changed from 5 min)
                       distanceInterval: 50, // Update if moved 50 meters
                       showsBackgroundLocationIndicator: true, // Show indicator (required on iOS)
                       foregroundService: { // Android foreground service for better reliability
