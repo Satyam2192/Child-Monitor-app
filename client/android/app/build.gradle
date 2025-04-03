@@ -1,6 +1,6 @@
 apply plugin: "com.android.application"
+apply plugin: "com.facebook.react" // Apply React Native plugin earlier
 apply plugin: "org.jetbrains.kotlin.android"
-apply plugin: "com.facebook.react"
 
 def projectRoot = rootDir.getAbsoluteFile().getParentFile().getAbsolutePath()
 
@@ -81,6 +81,25 @@ def enableProguardInReleaseBuilds = (findProperty('android.enableProguardInRelea
 def jscFlavor = 'org.webkit:android-jsc:+'
 
 android {
+    // Load local.properties
+    def localProperties = new Properties()
+    def localPropertiesFile = rootProject.file('local.properties') // Check root project first
+    if (!localPropertiesFile.exists()) {
+        localPropertiesFile = project.file('local.properties') // Check app project if not in root
+    }
+
+    if (localPropertiesFile.exists()) {
+        localPropertiesFile.withReader('UTF-8') { reader ->
+            localProperties.load(reader)
+        }
+    }
+
+    // Define a variable for the API key, defaulting to an empty string if not found
+    def googleMapsApiKey = localProperties.getProperty('GOOGLE_MAPS_API_KEY', '')
+    if (googleMapsApiKey.isEmpty()) {
+        println("Warning: GOOGLE_MAPS_API_KEY not found in local.properties. Please add it.")
+    }
+
     ndkVersion rootProject.ext.ndkVersion
 
     buildToolsVersion rootProject.ext.buildToolsVersion
@@ -93,6 +112,7 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
         versionName "1.0.0"
+        manifestPlaceholders = [GOOGLE_MAPS_API_KEY: googleMapsApiKey]
     }
     signingConfigs {
         debug {
@@ -148,8 +168,15 @@ android {
 
 dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
-    implementation("com.facebook.react:react-android")
-
+    implementation "com.facebook.react:react-android"
+    // For EncryptedSharedPreferences
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
+    
+    // For OkHttp networking
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    
+    // For Coroutines (used with OkHttp)
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3") // Downgraded for Kotlin 1.9.x compatibility
     def isGifEnabled = (findProperty('expo.gif.enabled') ?: "") == "true";
     def isWebpEnabled = (findProperty('expo.webp.enabled') ?: "") == "true";
     def isWebpAnimatedEnabled = (findProperty('expo.webp.animated') ?: "") == "true";

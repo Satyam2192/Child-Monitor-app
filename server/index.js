@@ -226,6 +226,56 @@ app.post('/api/link-user', authenticateToken, async (req, res) => {
     }
 });
 
+// --- API Endpoint for Native Service Location Updates ---
+app.post('/api/location', authenticateToken, async (req, res) => {
+    const { latitude, longitude, timestamp } = req.body;
+    const { userId, username, role } = req.user; // User info from JWT middleware
+
+    if (role !== 'child') {
+        console.warn(`Received location update via API from non-child user: ${username} (Role: ${role})`);
+        return res.status(403).json({ message: 'Only child devices can send location via this endpoint.' });
+    }
+
+    if (latitude == null || longitude == null || timestamp == null) {
+        console.warn(`Invalid location data received via API from child ${userId}:`, req.body);
+        return res.status(400).json({ message: 'Missing latitude, longitude, or timestamp.' });
+    }
+
+    console.log(`[API /api/location] Received location from ${username} (ID: ${userId}): Lat=${latitude}, Lon=${longitude}`);
+
+    const locationData = {
+        userId,
+        username,
+        latitude: parseFloat(latitude), // Ensure numbers
+        longitude: parseFloat(longitude),
+        timestamp: parseInt(timestamp, 10) // Ensure number
+    };
+
+    // Store the latest location (same logic as socket handler)
+    childLastLocations.set(userId, locationData);
+    // console.log(`[API /api/location] Stored last location for child ${userId}`);
+
+    // Find linked parents and broadcast via Socket.IO
+    try {
+        const childUser = await User.findOne({ id: userId }).select('linkedUserIds').lean();
+        const parentIds = childUser?.linkedUserIds || [];
+
+        if (parentIds.length > 0) {
+            // console.log(`[API /api/location] Broadcasting location for child ${userId} to parents: ${parentIds.join(',')}`);
+            broadcastToSpecificParentsSockets(parentIds, 'receive_location', locationData);
+        } else {
+            // console.log(`[API /api/location] Child ${userId} has no linked parents to notify.`);
+        }
+        // Send success response to the native service
+        res.status(200).json({ message: 'Location received successfully.' });
+
+    } catch (error) {
+        console.error(`[API /api/location] Error finding linked parents or broadcasting for child ${userId}:`, error);
+        // Still send success to the client, as the location was received, but log the error
+        res.status(200).json({ message: 'Location received, but error during broadcast.' });
+    }
+});
+
 
 // --- Expo Push Notifications Setup ---
 const expo = new Expo(); // Create a new Expo SDK client

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, Alert, AppState, AppStateStatus, Platform, Button, ActivityIndicator } from 'react-native'; // Added Button, ActivityIndicator
+import { View, Text, StyleSheet, Alert, AppState, AppStateStatus, Platform, Button, ActivityIndicator, NativeModules } from 'react-native'; // Added NativeModules
 import * as Location from 'expo-location';
 import { router, Href } from 'expo-router'; // Added router and Href
 // import { CameraView, useCameraPermissions } from 'expo-camera'; // Removed Camera import
@@ -9,7 +9,7 @@ import { useSocket } from '../context/SocketContext'; // Import the custom hook
 import AsyncStorage from '@react-native-async-storage/async-storage'; // Import AsyncStorage
 import { jwtDecode } from 'jwt-decode'; // Import jwtDecode
 // Removed child background task unregister import
-import { BACKGROUND_LOCATION_TASK } from '../tasks/locationTask'; // Import location task name
+// import { BACKGROUND_LOCATION_TASK } from '../tasks/locationTask'; // REMOVED location task import
 
 // Define the expected structure of the decoded JWT payload
 interface DecodedToken {
@@ -71,26 +71,21 @@ export default function ChildScreen() {
               console.log("Foreground location permission granted. Requesting background...");
               const { status: backgroundStatus } = await Location.requestBackgroundPermissionsAsync();
               if (backgroundStatus !== 'granted') {
-                  Alert.alert('Permission Warning', 'Background location permission recommended but not granted.');
-                  // Ensure background task is stopped if permission isn't granted
-                  Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
+                  Alert.alert('Permission Warning', 'Background location permission recommended but not granted. Tracking will only work when app is open.');
+                  // Don't start the native service if background permission isn't granted
               } else {
-                  console.log("Background location permission granted. Starting background task...");
-                  // Start background location updates
-                  await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
-                      accuracy: Location.Accuracy.Balanced, // Balanced accuracy for background
-                      timeInterval: 1 * 60 * 1000, // Approx every 1 minute (changed from 5 min)
-                      distanceInterval: 50, // Update if moved 50 meters
-                      showsBackgroundLocationIndicator: true, // Show indicator (required on iOS)
-                      foregroundService: { // Android foreground service for better reliability
-                          notificationTitle: "Tracking location",
-                          notificationBody: "FlashGet is tracking your location in the background.",
-                          notificationColor: "#ffffff", // Optional
-                      },
-                  });
+                  console.log("Background location permission granted. Starting native foreground service...");
+                  // Start native foreground service using the bridge
+                  try {
+                      const result = await NativeModules.LocationModule.startTrackingService();
+                      console.log("Native service start result:", result);
+                  } catch (e: any) {
+                      console.error("Failed to start native location service:", e);
+                      Alert.alert("Service Error", `Failed to start location tracking: ${e.message}`);
+                  }
               }
           }
-      } catch (err) {
+      } catch (err: any) {
           console.error("Error requesting location permissions:", err);
           Alert.alert("Error", "Could not request location permissions.");
       }
@@ -256,11 +251,23 @@ export default function ChildScreen() {
     if (socket) {
         socket.disconnect();
     }
-    // Stop background location task
-    await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
-    console.log("Stopped background location task.");
-    // Clear auth token
+    // Stop native background location service
+    try {
+        const result = await NativeModules.LocationModule.stopTrackingService();
+        console.log("Native service stop result:", result);
+    } catch (e: any) {
+        console.error("Failed to stop native location service:", e);
+        // Proceed with logout anyway, but log the error
+    }
+    // Clear auth token from AsyncStorage
     await AsyncStorage.removeItem('authToken');
+    // Clear auth token from native SharedPreferences
+    try {
+        await NativeModules.AuthStorageModule.clearAuthToken();
+        console.log("Native auth token cleared.");
+    } catch (e: any) {
+        console.error("Failed to clear native auth token:", e);
+    }
     // Clear connection code state
     setConnectionCode(null);
     // Navigate to login screen

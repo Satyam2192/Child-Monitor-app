@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, Button, StyleSheet, Alert, Pressable } from 'react-native';
+import { View, Text, TextInput, Button, StyleSheet, Alert, Pressable, NativeModules } from 'react-native'; // Added NativeModules
 import { router, Href } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { jwtDecode } from 'jwt-decode';
@@ -54,6 +54,16 @@ export default function LoginScreen() {
 
       if (data.token) {
         await AsyncStorage.setItem('authToken', data.token);
+        // --- Save token to native SharedPreferences for the service ---
+        try {
+            await NativeModules.AuthStorageModule.saveAuthToken(data.token);
+            console.log("Auth token saved to native storage.");
+        } catch (nativeError: any) {
+            console.error("Failed to save auth token to native storage:", nativeError);
+            // Decide if this is a critical error. Maybe just log it for now.
+            // Alert.alert("Storage Error", "Failed to prepare background service.");
+        }
+        // --- End native save ---
         updateAuthToken(data.token); // Notify SocketContext immediately
         const decoded = jwtDecode<DecodedToken>(data.token);
 
