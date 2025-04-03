@@ -497,18 +497,24 @@ io.on('connection', (socket) => {
             return socket.emit('join_room_error', { message: `You are not linked to child ID ${targetChildUserId}.` });
         }
 
-        // Proceed if linked
+        // Proceed if linked (Removed check for connectedChildren.has(targetChildUserId))
         const targetRoom = `child_${targetChildUserId}`;
-        if (connectedChildren.has(targetChildUserId)) {
-              console.log(`Parent ${username} (ID: ${userId}) joining specific room: ${targetRoom}`);
-              socket.join(targetRoom);
-              socket.emit('joined_room_ack', { room: targetRoom, childId: targetChildUserId });
+        console.log(`Parent ${username} (ID: ${userId}) joining specific room: ${targetRoom} (Child online status not checked here)`);
+        socket.join(targetRoom); // Allow parent to join the room regardless of child's socket status
+        socket.emit('joined_room_ack', { room: targetRoom, childId: targetChildUserId }); // Acknowledge joining the room
+
+        // Optional: Immediately send the last known location if available
+        const lastLocation = childLastLocations.get(targetChildUserId);
+        if (lastLocation) {
+            console.log(`Sending last known location for child ${targetChildUserId} to parent ${username} upon joining room.`);
+            socket.emit('receive_location', { ...lastLocation, isInitialJoinData: true });
         } else {
-           console.log(`Parent ${username} attempted to join non-existent/offline child room for ID: ${targetChildUserId}`);
-           socket.emit('join_room_error', { message: `Child with ID ${targetChildUserId} not found or is offline.` });
+             console.log(`No last known location available for child ${targetChildUserId} upon parent ${username} joining room.`);
+             // Optionally emit an event indicating no data yet? Or rely on future 'receive_location' events.
         }
+
       } catch (error) {
-          console.error(`Error checking link or joining room for parent ${userId} and child ${targetChildUserId}:`, error);
+          console.error(`Error checking link, joining room, or sending initial location for parent ${userId} and child ${targetChildUserId}:`, error);
           socket.emit('join_room_error', { message: 'Server error checking link status.' });
       }
     } else {

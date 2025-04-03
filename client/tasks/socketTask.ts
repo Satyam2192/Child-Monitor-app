@@ -57,47 +57,19 @@ TaskManager.defineTask(BACKGROUND_SOCKET_TASK, async () => {
       return BackgroundFetch.BackgroundFetchResult.Failed;
     }
 
-    // --- Fetch Child's Last Location (Parent Role Only) ---
-    console.log(`[${BACKGROUND_SOCKET_TASK}] Parent user detected. Fetching child's last location...`);
-    try {
-      // *** ASSUMPTION: Replace with your actual API endpoint ***
-      const response = await fetch(`${API_URL}/api/child/last-location`, {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${authToken}`,
-          'Content-Type': 'application/json',
-        },
-      });
+    // --- Background Task Logic (Parent Role Only) ---
+    // This task currently doesn't need to fetch location via HTTP,
+    // as location updates are handled by Socket.IO and push notification triggers.
+    // We keep the task definition to potentially run other background checks if needed later.
+    console.log(`[${BACKGROUND_SOCKET_TASK}] Parent user detected. Task executed, no HTTP fetch performed.`);
+    // Perform any other necessary background checks here if required in the future.
 
-      if (!response.ok) {
-        // Handle non-2xx responses (e.g., 404 Not Found, 401 Unauthorized, 500 Server Error)
-        const errorText = await response.text();
-        console.error(`[${BACKGROUND_SOCKET_TASK}] Failed to fetch location. Status: ${response.status}, Body: ${errorText}`);
-        // Decide if this is a permanent failure (e.g., 401 might mean token is bad -> clear?)
-        // For now, just report failure for this run
-        return BackgroundFetch.BackgroundFetchResult.Failed;
-      }
-
-      const locationData = await response.json();
-
-      if (locationData && locationData.latitude && locationData.longitude) {
-        console.log(`[${BACKGROUND_SOCKET_TASK}] Successfully fetched location:`, locationData);
-        // Store the fetched location data
-        await AsyncStorage.setItem(LAST_LOCATION_STORAGE_KEY, JSON.stringify(locationData));
-        return BackgroundFetch.BackgroundFetchResult.NewData; // Indicate new data was fetched
-      } else {
-        console.log(`[${BACKGROUND_SOCKET_TASK}] Fetched data is missing location details.`);
-        // Maybe the child hasn't sent location yet? Treat as NoData for this run.
-        return BackgroundFetch.BackgroundFetchResult.NoData;
-      }
-
-    } catch (fetchError) {
-      console.error(`[${BACKGROUND_SOCKET_TASK}] Error fetching child location:`, fetchError);
-      return BackgroundFetch.BackgroundFetchResult.Failed; // Network error or other issue
-    }
+    // For now, just indicate no new data was fetched by this task.
+    return BackgroundFetch.BackgroundFetchResult.NoData;
 
   } catch (error) {
-    console.error(`[${BACKGROUND_SOCKET_TASK}] General error during task execution:`, error);
+    // Catch errors from token decoding or other logic before the removed fetch block
+    console.error(`[${BACKGROUND_SOCKET_TASK}] Error during initial task setup (before fetch):`, error);
     return BackgroundFetch.BackgroundFetchResult.Failed;
   }
 });
