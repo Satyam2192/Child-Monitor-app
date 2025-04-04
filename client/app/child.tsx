@@ -8,6 +8,7 @@ import { PermissionStatus } from 'expo-modules-core'; // Import PermissionStatus
 import { useSocket } from '../context/SocketContext'; // Import the custom hook
 import AsyncStorage from '@react-native-async-storage/async-storage'; // Import AsyncStorage
 import { jwtDecode } from 'jwt-decode'; // Import jwtDecode
+import { registerForPushNotificationsAsync } from '../utils/notifications'; // Import the push notification registration function
 // Removed child background task unregister import
 // import { BACKGROUND_LOCATION_TASK } from '../tasks/locationTask'; // REMOVED location task import
 
@@ -125,6 +126,22 @@ export default function ChildScreen() {
            Alert.alert("Error", "Could not request audio permissions.");
        }
        */
+
+      // --- Register for Push Notifications ---
+      // Call this after permissions are handled, especially location
+      console.log("Attempting to register for push notifications...");
+      try {
+          const pushToken = await registerForPushNotificationsAsync();
+          if (pushToken) {
+              console.log("Push notification registration successful, token sent to backend:", pushToken);
+          } else {
+              console.warn("Push notification registration returned null token.");
+              // Alert might have already been shown in the function itself
+          }
+      } catch (pushError) {
+          console.error("Error during push notification registration call:", pushError);
+          Alert.alert("Notification Error", "Could not register for push notifications.");
+      }
     };
 
     requestPermissions();

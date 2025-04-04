@@ -77,43 +77,34 @@ const handleBackgroundNotificationAction = async (notification: Notifications.No
                 return;
             }
 
-            // 5. Connect Temporary Socket and Send
-            console.log('[Background Handler] Attempting temporary socket connection...');
-            tempSocket = io(SOCKET_URL, {
-                auth: { token: authToken },
-                reconnection: false,
-                timeout: 10000, // Slightly longer timeout for background
-                transports: ['websocket']
-            });
+            // 5. Send Location via HTTP POST (like the native service)
+            const locationApiEndpoint = `${SOCKET_URL}/api/location`; // Use the same base URL
+            console.log(`[Background Handler] Sending immediate location via HTTP POST to ${locationApiEndpoint}`);
 
-            tempSocket.on('connect', () => {
-                console.log('[Background Handler] Temporary socket connected:', tempSocket?.id);
-                console.log('[Background Handler] Sending immediate location...');
-                tempSocket?.emit('send_location', {
+            const response = await fetch(locationApiEndpoint, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${authToken}`,
+                },
+                body: JSON.stringify({
                     latitude: location.coords.latitude,
                     longitude: location.coords.longitude,
                     timestamp: location.timestamp,
-                });
-
-                // Disconnect shortly after sending
-                setTimeout(() => {
-                    console.log('[Background Handler] Disconnecting temporary socket after send.');
-                    tempSocket?.disconnect();
-                }, 1500); // Slightly longer wait
+                }),
             });
 
-            tempSocket.on('connect_error', (err) => {
-                console.error('[Background Handler] Temporary socket connection error:', err.message);
-                tempSocket?.disconnect();
-            });
+            if (!response.ok) {
+                const errorText = await response.text();
+                console.error(`[Background Handler] Error sending location via HTTP POST: ${response.status} - ${errorText}`);
+                throw new Error(`HTTP error ${response.status}`); // Throw to be caught below
+            }
 
-            tempSocket.on('disconnect', (reason) => {
-                console.log('[Background Handler] Temporary socket disconnected:', reason);
-            });
+            console.log('[Background Handler] Location successfully sent via HTTP POST.');
 
         } catch (error) {
             console.error('[Background Handler] Error processing immediate location request:', error);
-            tempSocket?.disconnect(); // Ensure cleanup on error
+            // No tempSocket to disconnect anymore
         }
     } else {
         console.log('[Background Handler] Notification received, but no relevant action found.');
