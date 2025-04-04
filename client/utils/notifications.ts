@@ -74,10 +74,12 @@ async function sendTokenToBackend(token: string) {
     const authToken = await AsyncStorage.getItem('authToken');
     if (!authToken) {
       console.warn('Cannot send push token to backend: User not logged in.');
+      console.log('[sendTokenToBackend] Auth token found.'); // Log token found
       return;
     }
+    console.log('[sendTokenToBackend] Auth token found.'); // Log token found
 
-    console.log(`Sending push token to backend: ${PUSH_ENDPOINT}`);
+    console.log(`[sendTokenToBackend] Sending push token ${token} to backend: ${PUSH_ENDPOINT}`); // Log token being sent
     const response = await fetch(PUSH_ENDPOINT, {
       method: 'POST',
       headers: {
@@ -87,15 +89,21 @@ async function sendTokenToBackend(token: string) {
       body: JSON.stringify({ pushToken: token }),
     });
 
+    const responseStatus = response.status; // Store status
+    const responseText = await response.text(); // Get response body text
+
+    console.log(`[sendTokenToBackend] Received response status: ${responseStatus}`); // Log status
+    console.log(`[sendTokenToBackend] Received response text: ${responseText}`); // Log response body
+
     if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Server error ${response.status}: ${errorText}`);
+      // Use the stored status and text in the error
+      throw new Error(`Server error ${responseStatus}: ${responseText}`);
     }
 
-    console.log('Push token successfully sent to backend.');
+    console.log('[sendTokenToBackend] Push token successfully sent to backend.');
 
   } catch (error) {
-    console.error('Failed to send push token to backend:', error);
+    console.error('[sendTokenToBackend] Failed to send push token to backend:', error); // Add prefix
     // Optionally alert the user or retry later
     // Alert.alert('Sync Error', 'Could not register device for notifications. Please try logging in again later.');
   }
