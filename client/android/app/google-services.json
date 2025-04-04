@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "323150292425",
+    "project_id": "flashget-db5fd",
+    "storage_bucket": "flashget-db5fd.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:323150292425:android:5f06784712fab42a7f7418",
+        "android_client_info": {
+          "package_name": "com.anonymous.FlashGet"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyANZiblxrmWO0qIxSNWsQN3tO47Su5MUqE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

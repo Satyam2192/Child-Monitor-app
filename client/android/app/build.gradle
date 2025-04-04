@@ -1,6 +1,7 @@
 apply plugin: "com.android.application"
 apply plugin: "com.facebook.react" // Apply React Native plugin earlier
 apply plugin: "org.jetbrains.kotlin.android"
+apply plugin: 'com.google.gms.google-services' // Add this line for Firebase
 
 def projectRoot = rootDir.getAbsoluteFile().getParentFile().getAbsolutePath()
 

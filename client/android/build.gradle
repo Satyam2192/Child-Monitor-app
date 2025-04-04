@@ -18,6 +18,7 @@ buildscript {
         classpath('com.android.tools.build:gradle:8.3.2') // Reverted AGP version for RN 0.76
         classpath('com.facebook.react:react-native-gradle-plugin')
         classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:${kotlinVersion}") // Explicitly use kotlinVersion
+        classpath('com.google.gms:google-services:4.4.1') // Add this line for Firebase
     }
 }
 

@@ -89,7 +89,9 @@ export default function ChildScreen() {
       } catch (err: any) {
           console.error("Error requesting location permissions:", err);
           Alert.alert("Error", "Could not request location permissions.");
+          // Consider if we should return here if location fails critically
       }
+      console.log("Location permission checks completed."); // Log after location checks
 
       // --- Camera (Removed) ---
       /*
@@ -128,10 +130,9 @@ export default function ChildScreen() {
        */
 
       // --- Register for Push Notifications ---
-      // Call this after permissions are handled, especially location
-      console.log("Attempting to register for push notifications...");
+      console.log("Proceeding to register for push notifications..."); // Log before attempting registration
       try {
-          const pushToken = await registerForPushNotificationsAsync();
+          const pushToken = await registerForPushNotificationsAsync(); // Call the registration function
           if (pushToken) {
               console.log("Push notification registration successful, token sent to backend:", pushToken);
           } else {
@@ -142,6 +143,7 @@ export default function ChildScreen() {
           console.error("Error during push notification registration call:", pushError);
           Alert.alert("Notification Error", "Could not register for push notifications.");
       }
+      console.log("Push notification registration attempt finished."); // Log after attempt
     };
 
     requestPermissions();

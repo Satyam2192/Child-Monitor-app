@@ -353,12 +353,17 @@ const sendPushNotifications = async (pushTokens, title, body, data) => {
             tokensToRemove.add(pushToken); // Mark invalid format tokens for removal
             continue;
         }
+        // Ensure title and body are strings, even if empty, for the SDK
         messages.push({
             to: pushToken,
-            sound: 'default',
-            title: title,
-            body: body,
+            sound: 'default', // Sound might still play on some devices even if body/title are empty, consider removing for truly silent.
+            title: title ?? '', // Use empty string if title is null/undefined
+            body: body ?? '',   // Use empty string if body is null/undefined
             data: data,
+            // For potentially more silent notifications, consider adding:
+            // priority: 'high', // Required for background data-only messages on Android
+            // channelId: 'location-updates', // Optional: Define a specific channel on the client
+            // contentAvailable: true, // For iOS background updates (might require specific setup)
         });
     }
 
